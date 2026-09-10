@@ -1,0 +1,9 @@
+fastapi
+uvicorn[standard]
+python-multipart
+anthropic
+python-docx
+pymupdf
+opencv-python-headless
+langdetect
+pytesseract

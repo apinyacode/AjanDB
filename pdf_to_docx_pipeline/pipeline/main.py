@@ -24,8 +24,13 @@ import pymupdf as fitz
 from . import extract, ocr, handwriting, assemble
 
 
-def run(pdf_path: str, output_path: str, langs: str = ocr.DEFAULT_LANGS,
-        handwriting_threshold: float = 0.85):
+def build_doc_items(pdf_path: str, langs: str = ocr.DEFAULT_LANGS,
+                     handwriting_threshold: float = 0.85):
+    """Runs stages 1-3 (extraction, OCR, handwriting detection) and returns
+    the ordered content items plus run stats, without assembling a .docx -
+    split out from run() so other consumers (e.g. a markdown converter) can
+    reuse the same extraction/classification logic against a different
+    output format."""
     blocks = extract.extract_pdf(pdf_path)
 
     doc_items = []
@@ -96,6 +101,13 @@ def run(pdf_path: str, output_path: str, langs: str = ocr.DEFAULT_LANGS,
                     doc_items.append({"kind": "text", "lang": lang, "text": line["text"]})
                     stats["ocr_lines"] += 1
 
+    return doc_items, stats
+
+
+def run(pdf_path: str, output_path: str, langs: str = ocr.DEFAULT_LANGS,
+        handwriting_threshold: float = 0.85):
+    doc_items, stats = build_doc_items(
+        pdf_path, langs=langs, handwriting_threshold=handwriting_threshold)
     assemble.build_docx(doc_items, output_path)
     return stats
 

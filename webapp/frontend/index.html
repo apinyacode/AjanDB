@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AjanDB</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header>
+  <h1>AjanDB</h1>
+  <nav>
+    <button class="tab-btn active" data-tab="upload">Upload</button>
+    <button class="tab-btn" data-tab="search">Search</button>
+    <button class="tab-btn" data-tab="chat">Compile a book</button>
+  </nav>
+</header>
+
+<main>
+  <section id="upload" class="tab active">
+    <h2>Upload a file</h2>
+    <p class="hint">Accepts .pdf, .docx, .txt, .md. PDFs are digitised (text extraction + OCR + handwriting detection) and stored as markdown.</p>
+    <div class="row">
+      <input type="file" id="file-input" accept=".pdf,.docx,.txt,.md">
+      <button id="upload-btn">Upload &amp; convert</button>
+    </div>
+    <p id="upload-status" class="status"></p>
+    <pre id="upload-preview" class="markdown-preview"></pre>
+  </section>
+
+  <section id="search" class="tab">
+    <h2>Search files</h2>
+    <div class="row">
+      <input type="text" id="search-input" placeholder="Keyword…">
+      <button id="search-btn">Search</button>
+    </div>
+    <ul id="search-results"></ul>
+  </section>
+
+  <section id="chat" class="tab">
+    <h2>Compile a book</h2>
+    <p class="hint">Describe a topic; every stored file that matches gets synthesised into one book.</p>
+    <textarea id="chat-input" rows="3" placeholder="e.g. Compile a book from all the files containing content about how to raise a child"></textarea>
+    <div class="row">
+      <button id="chat-btn">Compile</button>
+    </div>
+    <p id="chat-status" class="status"></p>
+    <pre id="chat-output" class="markdown-preview"></pre>
+  </section>
+</main>
+
+<script src="app.js"></script>
+</body>
+</html>
