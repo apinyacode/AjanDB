@@ -1,0 +1,6 @@
+pymupdf
+opencv-python-headless
+python-docx
+langdetect
+pytesseract
+anthropic
