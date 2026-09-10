@@ -30,20 +30,40 @@ def test_items_to_markdown_strips_control_characters():
     assert "BadCharHere" in md
 
 
-def test_items_to_markdown_renders_headings_text_and_placeholders():
+def test_items_to_markdown_renders_headings_text_and_summary():
     items = [
         {"kind": "heading", "page": 0},
         {"kind": "text", "lang": "en", "text": "Hello world"},
         {"kind": "image", "image_bytes": b""},
+        {"kind": "handwriting", "image_bytes": b""},
         {"kind": "handwriting", "image_bytes": b""},
         {"kind": "uncertain", "image_bytes": b""},
     ]
     md = convert.items_to_markdown(items)
     assert "## Page 1" in md
     assert "Hello world" in md
-    assert "Image omitted" in md
-    assert "Handwritten note" in md
-    assert "Low-confidence OCR" in md
+    assert "1 image(s)" in md
+    assert "2 handwritten/low-confidence region(s)" in md
+    assert "1 low-confidence OCR region(s)" in md
+
+
+def test_items_to_markdown_collapses_many_flagged_items_into_one_summary_line():
+    items = [{"kind": "heading", "page": 0}] + [{"kind": "handwriting", "image_bytes": b""}] * 50
+    md = convert.items_to_markdown(items)
+    assert md.count("Not shown as text") == 1
+    assert "50 handwritten" in md
+
+
+def test_items_to_markdown_gives_each_page_its_own_summary():
+    items = [
+        {"kind": "heading", "page": 0},
+        {"kind": "handwriting", "image_bytes": b""},
+        {"kind": "heading", "page": 1},
+        {"kind": "text", "lang": "en", "text": "Clean page"},
+    ]
+    md = convert.items_to_markdown(items)
+    assert md.count("Not shown as text") == 1  # only page 1 had a flagged item
+    assert "Clean page" in md
 
 
 def test_pdf_to_markdown_extracts_text_and_page_headings(tmp_path):
@@ -57,4 +77,4 @@ def test_pdf_to_markdown_extracts_text_and_page_headings(tmp_path):
     assert "## Page 1" in markdown
     assert "## Page 3" in markdown
     assert "Field Visit Notes" in markdown
-    assert "Handwritten note" in markdown  # the simulated handwriting on page 3
+    assert "Not shown as text" in markdown  # the simulated handwriting on page 3

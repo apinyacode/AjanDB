@@ -34,29 +34,45 @@ def _clean(text: str) -> str:
     return _CONTROL_CHARS_RE.sub("", text)
 
 
+_SUMMARY_LABELS = {
+    "image": "image(s)",
+    "handwriting": "handwritten/low-confidence region(s)",
+    "uncertain": "low-confidence OCR region(s)",
+}
+
+
 def items_to_markdown(doc_items: list[dict]) -> str:
     """Mirrors pipeline.assemble.build_docx's structure, but as markdown text.
-    Images aren't inlined (there's nowhere to put the bytes in plain text) -
-    each is replaced with a short note, since the point of this store is
-    searchable/compilable text content, not a faithful visual reproduction."""
+    Images aren't inlined (there's nowhere to put the bytes in plain text).
+    Non-text items are counted and rolled into one summary line per page
+    instead of a placeholder per item: a scanned page in a script with heavy
+    diacritics (Thai, Vietnamese, ...) can produce dozens of tiny mis-split
+    OCR fragments that the handwriting heuristic flags individually (see
+    pipeline/handwriting.py's docstring) - one placeholder line each would
+    swamp the real extracted text without adding any real information, since
+    none of these carry recoverable text anyway."""
     lines = []
+    counts = {"image": 0, "handwriting": 0, "uncertain": 0}
+
+    def flush_summary():
+        parts = [f"{counts[k]} {_SUMMARY_LABELS[k]}" for k in counts if counts[k]]
+        if parts:
+            lines.append("*[Not shown as text: " + ", ".join(parts) + " - see the original document]*")
+        for k in counts:
+            counts[k] = 0
+
     for item in doc_items:
         kind = item["kind"]
         if kind == "heading":
+            flush_summary()
             lines.append(f"## Page {item['page'] + 1}")
         elif kind == "text":
             text = _clean(item["text"]).strip()
             if text:
                 lines.append(text)
-        elif kind == "image":
-            lines.append("*[Image omitted]*")
-        elif kind == "handwriting":
-            lines.append(
-                "*[Handwritten note - kept as an image in the original, "
-                "needs manual review/transcription]*"
-            )
-        elif kind == "uncertain":
-            lines.append("*[Low-confidence OCR region omitted]*")
+        elif kind in counts:
+            counts[kind] += 1
+    flush_summary()
     return "\n\n".join(lines).strip() + "\n"
 
 
