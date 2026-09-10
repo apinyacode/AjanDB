@@ -19,11 +19,24 @@
 <main>
   <section id="upload" class="tab active">
     <h2>Upload a file</h2>
-    <p class="hint">Accepts .pdf, .docx, .txt, .md. PDFs are digitised (text extraction + OCR + handwriting detection) and stored as markdown.</p>
+    <p class="hint">Accepts .pdf, .docx, .txt, .md. PDFs are digitised (text extraction + OCR/vision + handwriting detection) and stored as markdown.</p>
     <div class="row">
       <input type="file" id="file-input" accept=".pdf,.docx,.txt,.md">
       <button id="upload-btn">Upload &amp; convert</button>
     </div>
+    <div class="row engine-row">
+      <label for="engine-select">PDF engine</label>
+      <select id="engine-select">
+        <option value="classical">Classical OCR (free, local Tesseract)</option>
+        <option value="vision">Vision-LLM (needs an API key, better on messy/non-Latin scans)</option>
+      </select>
+      <label for="upload-provider-select">Model</label>
+      <select id="upload-provider-select" disabled>
+        <option value="anthropic">Claude</option>
+        <option value="openai">GPT (OpenAI)</option>
+      </select>
+    </div>
+    <p class="hint small">An API key is a separate, billed-by-usage credential from your provider's developer console — not the same as a claude.ai or ChatGPT Plus subscription. Set <code>ANTHROPIC_API_KEY</code> or <code>OPENAI_API_KEY</code> in the backend's environment to use the vision engine.</p>
     <p id="upload-status" class="status"></p>
     <pre id="upload-preview" class="markdown-preview"></pre>
   </section>
@@ -42,6 +55,11 @@
     <p class="hint">Describe a topic; every stored file that matches gets synthesised into one book.</p>
     <textarea id="chat-input" rows="3" placeholder="e.g. Compile a book from all the files containing content about how to raise a child"></textarea>
     <div class="row">
+      <label for="chat-provider-select">Model</label>
+      <select id="chat-provider-select">
+        <option value="anthropic">Claude</option>
+        <option value="openai">GPT (OpenAI)</option>
+      </select>
       <button id="chat-btn">Compile</button>
     </div>
     <p id="chat-status" class="status"></p>

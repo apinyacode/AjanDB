@@ -10,6 +10,12 @@ tabButtons.forEach((btn) => {
   });
 });
 
+const engineSelect = document.getElementById("engine-select");
+const uploadProviderSelect = document.getElementById("upload-provider-select");
+engineSelect.addEventListener("change", () => {
+  uploadProviderSelect.disabled = engineSelect.value !== "vision";
+});
+
 document.getElementById("upload-btn").addEventListener("click", async () => {
   const input = document.getElementById("file-input");
   const status = document.getElementById("upload-status");
@@ -20,9 +26,15 @@ document.getElementById("upload-btn").addEventListener("click", async () => {
     return;
   }
 
+  const engine = engineSelect.value;
   const formData = new FormData();
   formData.append("file", input.files[0]);
-  status.textContent = "Uploading & converting… (PDFs with scanned pages can take a moment)";
+  formData.append("engine", engine);
+  if (engine === "vision") formData.append("provider", uploadProviderSelect.value);
+
+  status.textContent = engine === "vision"
+    ? "Uploading & converting via vision-LLM… (one API call per scanned page, can take a while)"
+    : "Uploading & converting… (PDFs with scanned pages can take a moment)";
   preview.textContent = "";
 
   try {
@@ -70,11 +82,13 @@ document.getElementById("chat-btn").addEventListener("click", async () => {
   status.textContent = "Compiling…";
   output.textContent = "";
 
+  const provider = document.getElementById("chat-provider-select").value;
+
   try {
     const res = await fetch("/api/chat", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ instruction }),
+      body: JSON.stringify({ instruction, provider }),
     });
     const data = await res.json();
     if (!res.ok) throw new Error(data.detail || "Compile failed");

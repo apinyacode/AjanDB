@@ -10,7 +10,7 @@ import os
 import shutil
 import tempfile
 
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -24,7 +24,17 @@ _FRONTEND_DIR = os.path.join(
 
 
 @app.post("/api/upload")
-async def upload(file: UploadFile = File(...)):
+async def upload(
+    file: UploadFile = File(...),
+    engine: str = Form("classical"),
+    provider: str | None = Form(None),
+    model: str | None = Form(None),
+):
+    """`engine`="vision" routes scanned PDF pages through a per-page LLM call
+    (`provider`: "anthropic" or "openai") instead of local Tesseract - see
+    convert.pdf_to_markdown_vision. Needs the matching API key set in the
+    backend's environment; that's separate from a claude.ai/ChatGPT Plus
+    subscription."""
     ext = os.path.splitext(file.filename or "")[1].lower()
     if ext not in convert.SUPPORTED_EXTENSIONS:
         raise HTTPException(400, f"Unsupported file type: {ext or '(none)'}")
@@ -34,7 +44,12 @@ async def upload(file: UploadFile = File(...)):
         tmp_path = tmp.name
 
     try:
-        markdown = convert.convert_to_markdown(tmp_path, file.filename)
+        markdown = convert.convert_to_markdown(
+            tmp_path, file.filename, engine=engine, provider=provider, model=model)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    except RuntimeError as e:
+        raise HTTPException(503, str(e))
     except Exception as e:
         raise HTTPException(422, f"Failed to convert {file.filename}: {e}")
     finally:
@@ -81,13 +96,17 @@ def search(q: str):
 
 class ChatRequest(BaseModel):
     instruction: str
+    provider: str | None = None  # "anthropic" (default) or "openai" - picks which API key is used
+    model: str | None = None
 
 
 @app.post("/api/chat")
 def chat(req: ChatRequest):
     conn = db.get_connection()
     try:
-        return book_compiler.compile_book(req.instruction, conn)
+        return book_compiler.compile_book(req.instruction, conn, provider=req.provider, model=req.model)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
     except RuntimeError as e:
         raise HTTPException(503, str(e))
     except Exception as e:

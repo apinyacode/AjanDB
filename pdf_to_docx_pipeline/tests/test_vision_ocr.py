@@ -27,6 +27,34 @@ class _FakeAnthropic:
         self.messages = _FakeMessages(response_text)
 
 
+class _FakeOpenAIMessage:
+    def __init__(self, content):
+        self.content = content
+
+
+class _FakeOpenAIChoice:
+    def __init__(self, content):
+        self.message = _FakeOpenAIMessage(content)
+
+
+class _FakeOpenAICompletions:
+    def __init__(self, content):
+        self._content = content
+
+    def create(self, **kwargs):
+        return SimpleNamespace(choices=[_FakeOpenAIChoice(self._content)])
+
+
+class _FakeOpenAIChat:
+    def __init__(self, content):
+        self.completions = _FakeOpenAICompletions(content)
+
+
+class _FakeOpenAI:
+    def __init__(self, content, api_key=None):
+        self.chat = _FakeOpenAIChat(content)
+
+
 def _sample_response_json():
     return json.dumps({
         "blocks": [
@@ -78,3 +106,64 @@ def test_extract_page_with_vision_strips_code_fences(monkeypatch):
 def test_strip_code_fences_handles_plain_json():
     raw = '{"blocks": []}'
     assert vision_ocr._strip_code_fences(raw) == raw
+
+
+def test_extract_page_with_vision_raises_clear_error_when_no_api_key(monkeypatch):
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    try:
+        vision_ocr.extract_page_with_vision(_tiny_png_bytes())
+        assert False, "expected RuntimeError"
+    except RuntimeError as e:
+        assert "ANTHROPIC_API_KEY" in str(e)
+
+
+def test_extract_page_with_vision_raises_clear_error_when_no_openai_key(monkeypatch):
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    try:
+        vision_ocr.extract_page_with_vision(_tiny_png_bytes(), provider="openai")
+        assert False, "expected RuntimeError"
+    except RuntimeError as e:
+        assert "OPENAI_API_KEY" in str(e)
+
+
+def test_extract_page_with_vision_uses_openai_when_provider_selected(monkeypatch):
+    monkeypatch.setattr(
+        vision_ocr, "OpenAI",
+        lambda api_key=None: _FakeOpenAI(_sample_response_json()),
+    )
+    png_bytes = _tiny_png_bytes(w=200, h=100)
+
+    blocks = vision_ocr.extract_page_with_vision(
+        png_bytes, provider="openai", model="gpt-4o", api_key="fake")
+
+    assert len(blocks) == 3
+    assert blocks[0]["bbox_px"] == (20, 10, 100, 20)
+
+
+def test_extract_page_with_vision_defaults_openai_model_when_omitted(monkeypatch):
+    seen = {}
+
+    class _RecordingOpenAI:
+        def __init__(self, api_key=None):
+            pass
+
+        class chat:
+            class completions:
+                @staticmethod
+                def create(**kwargs):
+                    seen["model"] = kwargs["model"]
+                    return SimpleNamespace(
+                        choices=[SimpleNamespace(message=SimpleNamespace(content=_sample_response_json()))]
+                    )
+
+    monkeypatch.setattr(vision_ocr, "OpenAI", _RecordingOpenAI)
+    vision_ocr.extract_page_with_vision(_tiny_png_bytes(), provider="openai", api_key="fake")
+    assert seen["model"] == "gpt-4o"
+
+
+def test_extract_page_with_vision_rejects_unknown_provider():
+    try:
+        vision_ocr.extract_page_with_vision(_tiny_png_bytes(), provider="bogus", api_key="fake")
+        assert False, "expected ValueError"
+    except ValueError as e:
+        assert "bogus" in str(e)

@@ -19,9 +19,14 @@ ocr.py's output quality isn't good enough - not as the default for every
 PDF. A sensible policy: try the classical pipeline first (main.py), and
 only fall back to this one for pages/documents where it clearly fails.
 
-Requires: pip install anthropic, and an ANTHROPIC_API_KEY environment
-variable set to your own API key. Nothing in this file will work without
-that key - Claude.ai's sandboxed environment does not have one.
+Two providers, same prompt/output contract - pick whichever API key you
+actually have:
+  - "anthropic" (default): claude-sonnet-5, or claude-opus-4-8 for the
+    hardest handwriting-heavy/messy-scan pages. Needs ANTHROPIC_API_KEY.
+  - "openai": gpt-4o. Needs OPENAI_API_KEY.
+Neither key is the same thing as a claude.ai or ChatGPT Plus subscription -
+both are separate, billed-by-usage API credentials from each provider's own
+developer console.
 """
 import base64
 import json
@@ -29,10 +34,16 @@ import os
 import re
 
 from anthropic import Anthropic
+from openai import OpenAI
 
-DEFAULT_MODEL = "claude-sonnet-5"  # claude-haiku-4-5-20251001 is cheaper/faster
-                                    # for straightforward pages; claude-opus-4-8
-                                    # for the hardest handwriting-heavy pages.
+DEFAULT_PROVIDER = "anthropic"
+
+DEFAULT_MODEL_BY_PROVIDER = {
+    "anthropic": "claude-sonnet-5",  # claude-haiku-4-5-20251001 is cheaper/faster
+                                      # for straightforward pages; claude-opus-4-8
+                                      # for the hardest handwriting-heavy pages.
+    "openai": "gpt-4o",
+}
 
 PROMPT = """You are digitising a scanned book/document page for a Word document.
 
@@ -72,13 +83,12 @@ def _strip_code_fences(text: str) -> str:
     return text
 
 
-def extract_page_with_vision(png_bytes: bytes, model: str = DEFAULT_MODEL,
-                              api_key: str = None) -> list[dict]:
-    """Sends one rendered page image to a Claude vision model and returns a
-    list of blocks, each with pixel-space bbox coordinates already converted
-    from the model's normalized (0-1) output."""
-    client = Anthropic(api_key=api_key or os.environ.get("ANTHROPIC_API_KEY"))
+_API_KEY_ENV_VAR = {"anthropic": "ANTHROPIC_API_KEY", "openai": "OPENAI_API_KEY"}
+_PROVIDER_DISPLAY_NAME = {"anthropic": "Anthropic", "openai": "OpenAI"}
 
+
+def _call_anthropic(png_bytes: bytes, model: str, api_key: str) -> str:
+    client = Anthropic(api_key=api_key)
     response = client.messages.create(
         model=model,
         max_tokens=4096,
@@ -93,8 +103,53 @@ def extract_page_with_vision(png_bytes: bytes, model: str = DEFAULT_MODEL,
             ],
         }],
     )
+    return "".join(b.text for b in response.content if b.type == "text")
 
-    raw = "".join(b.text for b in response.content if b.type == "text")
+
+def _call_openai(png_bytes: bytes, model: str, api_key: str) -> str:
+    client = OpenAI(api_key=api_key)
+    response = client.chat.completions.create(
+        model=model,
+        max_tokens=4096,
+        messages=[{
+            "role": "user",
+            "content": [
+                {"type": "text", "text": PROMPT},
+                {"type": "image_url", "image_url": {
+                    "url": f"data:image/png;base64,{_encode_image(png_bytes)}",
+                }},
+            ],
+        }],
+    )
+    return response.choices[0].message.content
+
+
+_CALLERS = {"anthropic": _call_anthropic, "openai": _call_openai}
+
+
+def extract_page_with_vision(png_bytes: bytes, model: str = None, api_key: str = None,
+                              provider: str = None) -> list[dict]:
+    """Sends one rendered page image to a vision-LLM and returns a list of
+    blocks, each with pixel-space bbox coordinates already converted from
+    the model's normalized (0-1) output. `provider` picks which API this
+    calls ("anthropic" or "openai", default "anthropic" or
+    $VISION_LLM_PROVIDER); `model` defaults to that provider's flagship
+    model if omitted."""
+    provider = (provider or os.environ.get("VISION_LLM_PROVIDER") or DEFAULT_PROVIDER).lower()
+    if provider not in _CALLERS:
+        raise ValueError(f"Unknown vision LLM provider {provider!r} - expected 'anthropic' or 'openai'")
+    model = model or DEFAULT_MODEL_BY_PROVIDER[provider]
+
+    env_var = _API_KEY_ENV_VAR[provider]
+    resolved_key = api_key or os.environ.get(env_var)
+    if not resolved_key:
+        raise RuntimeError(
+            f"{env_var} is not set. The vision-LLM OCR engine needs your own "
+            f"{_PROVIDER_DISPLAY_NAME[provider]} API key - this is not the same as a claude.ai "
+            f"or ChatGPT Plus subscription."
+        )
+
+    raw = _CALLERS[provider](png_bytes, model, resolved_key)
     parsed = json.loads(_strip_code_fences(raw))
 
     # need real pixel dimensions to convert the model's normalized bboxes

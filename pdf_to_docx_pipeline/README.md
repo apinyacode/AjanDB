@@ -150,19 +150,30 @@ high, rather than defaulting to the vision engine for everything.
 
 ```bash
 export ANTHROPIC_API_KEY=sk-ant-...
-python3 -m pipeline.main_vision input.pdf output.docx --model claude-sonnet-5
+python3 -m pipeline.main_vision input.pdf output.docx --provider anthropic --model claude-sonnet-5
+
+# or, with an OpenAI key instead - same pipeline, different vision model:
+export OPENAI_API_KEY=sk-...
+python3 -m pipeline.main_vision input.pdf output.docx --provider openai --model gpt-4o
 ```
 
-`--model` also accepts `claude-haiku-4-5-20251001` (cheaper/faster, fine
-for straightforward pages) or `claude-opus-4-8` (for the hardest
-handwriting-heavy pages).
+Two providers, same prompt/output contract - pick whichever key you actually
+have. Neither is the same thing as a claude.ai or ChatGPT Plus
+*subscription*; both need a separate, billed-by-usage API key from that
+provider's own developer console.
 
-Important honesty note: `main_vision.py` has been tested for structural
-correctness (JSON parsing, bbox-to-pixel-crop math, docx assembly) using a
-mocked model response, but **not** run end-to-end against a real API key in
-the environment this was built in - there's no key available there. Run it
-on a few pages first and check the output before trusting it on a full
-document.
+For `--provider anthropic`, `--model` also accepts `claude-haiku-4-5-20251001`
+(cheaper/faster, fine for straightforward pages) or `claude-opus-4-8` (the
+most capable, worth trying on the hardest handwriting-heavy or messy-scan
+pages). For `--provider openai`, `gpt-4o` is currently the only supported
+default.
+
+Important honesty note: both providers' code paths have been tested for
+structural correctness (JSON parsing, bbox-to-pixel-crop math, docx assembly)
+using a mocked model response, but **not** run end-to-end against a real API
+key in the environment this was built in - there's no key available there.
+Run it on a few pages first and check the output before trusting it on a
+full document, on whichever provider you use.
 
 
 

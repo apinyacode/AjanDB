@@ -18,6 +18,7 @@ if _PIPELINE_DIR not in sys.path:
 
 from pipeline import ocr as pdf_ocr  # noqa: E402
 from pipeline.main import build_doc_items  # noqa: E402
+from pipeline.main_vision import build_doc_items_vision  # noqa: E402
 
 SUPPORTED_EXTENSIONS = (".pdf", ".docx", ".txt", ".md")
 
@@ -81,6 +82,16 @@ def pdf_to_markdown(pdf_path: str, langs: str = None) -> str:
     return items_to_markdown(doc_items)
 
 
+def pdf_to_markdown_vision(pdf_path: str, provider: str = None, model: str = None) -> str:
+    """Same as pdf_to_markdown, but scanned pages go through a vision-LLM
+    (Claude or GPT-4o, see pipeline/vision_ocr.py) instead of local
+    Tesseract - better at messy real-world scans and non-Latin scripts, at
+    the cost of a per-page API call. Needs ANTHROPIC_API_KEY or
+    OPENAI_API_KEY set in the backend's environment, matching `provider`."""
+    doc_items, _ = build_doc_items_vision(pdf_path, provider=provider, model=model)
+    return items_to_markdown(doc_items)
+
+
 def docx_to_markdown(docx_path: str) -> str:
     from docx import Document
 
@@ -94,9 +105,17 @@ def text_to_markdown(text_path: str) -> str:
         return f.read()
 
 
-def convert_to_markdown(file_path: str, filename: str) -> str:
+def convert_to_markdown(file_path: str, filename: str, engine: str = "classical",
+                         provider: str = None, model: str = None) -> str:
+    """`engine`: "classical" (default, free, local Tesseract) or "vision"
+    (per-page LLM call via `provider`/`model` - see pdf_to_markdown_vision).
+    Only affects PDFs; other file types have nothing to digitise."""
     ext = os.path.splitext(filename)[1].lower()
     if ext == ".pdf":
+        if engine == "vision":
+            return pdf_to_markdown_vision(file_path, provider=provider, model=model)
+        if engine != "classical":
+            raise ValueError(f"Unknown conversion engine {engine!r} - expected 'classical' or 'vision'")
         return pdf_to_markdown(file_path)
     if ext == ".docx":
         return docx_to_markdown(file_path)

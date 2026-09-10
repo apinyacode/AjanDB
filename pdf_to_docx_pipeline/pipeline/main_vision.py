@@ -6,7 +6,11 @@ for pages that actually need OCR.
 
 Usage:
     export ANTHROPIC_API_KEY=sk-ant-...
-    python -m pipeline.main_vision input.pdf output.docx --model claude-sonnet-5
+    python -m pipeline.main_vision input.pdf output.docx --provider anthropic --model claude-sonnet-5
+
+    # or, with an OpenAI key instead:
+    export OPENAI_API_KEY=sk-...
+    python -m pipeline.main_vision input.pdf output.docx --provider openai --model gpt-4o
 """
 import argparse
 import cv2
@@ -28,8 +32,13 @@ def _crop_png(color_img: np.ndarray, bbox_px: tuple) -> bytes:
     return buf.tobytes()
 
 
-def run(pdf_path: str, output_path: str, model: str = vision_ocr.DEFAULT_MODEL,
-        dpi: int = 200):
+def build_doc_items_vision(pdf_path: str, provider: str = None, model: str = None,
+                            dpi: int = 200):
+    """Runs the vision-LLM engine (stage 1 native extraction + stage 2 vision
+    OCR for scanned pages) and returns the ordered content items plus run
+    stats, without assembling a .docx - split out from run() so other
+    consumers (e.g. a markdown converter) can reuse the same logic against a
+    different output format."""
     blocks = extract.extract_pdf(pdf_path)
 
     doc_items = []
@@ -55,7 +64,7 @@ def run(pdf_path: str, output_path: str, model: str = vision_ocr.DEFAULT_MODEL,
             png_bytes = extract.render_page_for_ocr(pdf_path, block.page_number, dpi=dpi)
             color_img = cv2.imdecode(np.frombuffer(png_bytes, dtype=np.uint8), cv2.IMREAD_COLOR)
 
-            model_blocks = vision_ocr.extract_page_with_vision(png_bytes, model=model)
+            model_blocks = vision_ocr.extract_page_with_vision(png_bytes, model=model, provider=provider)
 
             for b in model_blocks:
                 if b["type"] == "text" and b.get("text"):
@@ -84,6 +93,12 @@ def run(pdf_path: str, output_path: str, model: str = vision_ocr.DEFAULT_MODEL,
                             doc_items.append({"kind": "handwriting", "image_bytes": crop})
                         stats["handwritten_blocks"] += 1
 
+    return doc_items, stats
+
+
+def run(pdf_path: str, output_path: str, provider: str = None, model: str = None,
+        dpi: int = 200):
+    doc_items, stats = build_doc_items_vision(pdf_path, provider=provider, model=model, dpi=dpi)
     assemble.build_docx(doc_items, output_path)
     return stats
 
@@ -93,14 +108,22 @@ def main():
         description="Digitise a mixed-content PDF into a .docx using a vision-LLM for scanned pages")
     parser.add_argument("input_pdf")
     parser.add_argument("output_docx")
-    parser.add_argument("--model", default=vision_ocr.DEFAULT_MODEL,
-                         help="claude-sonnet-5 (default), claude-haiku-4-5-20251001 (cheaper), "
-                              "or claude-opus-4-8 (hardest pages)")
+    parser.add_argument("--provider", choices=["anthropic", "openai"], default=None,
+                         help="Which vision API to call (default 'anthropic', or "
+                              "$VISION_LLM_PROVIDER). Needs the matching API key set: "
+                              "ANTHROPIC_API_KEY or OPENAI_API_KEY - neither is the same "
+                              "as a claude.ai or ChatGPT Plus subscription.")
+    parser.add_argument("--model", default=None,
+                         help="Defaults to the provider's flagship model. For anthropic: "
+                              "claude-sonnet-5 (default), claude-haiku-4-5-20251001 "
+                              "(cheaper), or claude-opus-4-8 (hardest pages). For openai: "
+                              "gpt-4o (default).")
     parser.add_argument("--dpi", type=int, default=200,
                          help="Render DPI for scanned pages sent to the model")
     args = parser.parse_args()
 
-    stats = run(args.input_pdf, args.output_docx, model=args.model, dpi=args.dpi)
+    stats = run(args.input_pdf, args.output_docx, provider=args.provider,
+                model=args.model, dpi=args.dpi)
 
     print(f"Wrote {args.output_docx}")
     print("--- run summary ---")

@@ -4,15 +4,18 @@ A simple front end + backend for uploading unstructured files, storing them
 as searchable markdown, and compiling a book from whatever matches a topic.
 
 - **Upload** — .pdf, .docx, .txt, or .md. PDFs go through the digitisation
-  pipeline in `../pdf_to_docx_pipeline` (born-digital text extraction, local
-  OCR for scanned pages, handwriting detection); everything else is read
-  directly. The result is stored as markdown in SQLite.
+  pipeline in `../pdf_to_docx_pipeline`; everything else is read directly.
+  The result is stored as markdown in SQLite. Two PDF engines, picked per
+  upload from the UI: **Classical** (free, local Tesseract OCR + handwriting
+  detection - the default) or **Vision-LLM** (a per-page call to Claude or
+  GPT-4o - better on messy real-world scans and non-Latin scripts, costs
+  tokens, needs an API key).
 - **Search** — full-text keyword search (SQLite FTS5) over every stored
   file's markdown, returning the matching files with a highlighted snippet.
 - **Compile a book** — give it an instruction (e.g. "compile a book from all
   the files containing content about how to raise a child"); it keyword-
-  searches the store for matching files and asks Claude to synthesise them
-  into one coherent book in markdown.
+  searches the store for matching files and asks Claude or GPT (your choice,
+  per request) to synthesise them into one coherent book in markdown.
 
 ## Setup
 
@@ -34,16 +37,24 @@ uvicorn backend.main:app --reload --app-dir .
 Then open http://127.0.0.1:8000/ - the backend serves the frontend directly,
 so there's nothing separate to run for the UI.
 
-The "Compile a book" tab requires `ANTHROPIC_API_KEY` to be set in the
-backend's environment:
+The "Compile a book" tab, and the Vision-LLM upload engine, need an API key
+set in the backend's environment - pick whichever provider you actually
+have (neither is the same thing as a claude.ai or ChatGPT Plus
+*subscription*; both are separate, billed-by-usage API keys from that
+provider's own developer console):
 
 ```bash
-export ANTHROPIC_API_KEY=sk-ant-...
+export ANTHROPIC_API_KEY=sk-ant-...   # for the Claude option
+# and/or
+export OPENAI_API_KEY=sk-...          # for the GPT option
 ```
 
-Without it, upload and search work fully; compiling returns a clear error
-rather than crashing (tested; the actual model call is mocked in the test
-suite since no key is available in this environment).
+The frontend lets you pick Claude or GPT per upload/compile request; without
+the matching key set, that request returns a clear error rather than
+crashing (tested; the actual model calls are mocked in the test suite since
+no key is available in this environment). `$LLM_PROVIDER` /
+`$VISION_LLM_PROVIDER` set the server-side default when the frontend doesn't
+specify one.
 
 ## Test
 
@@ -51,10 +62,10 @@ suite since no key is available in this environment).
 python3 -m pytest tests/ -v
 ```
 
-22 tests covering the SQLite/FTS5 layer, file-type conversion (including an
+31 tests covering the SQLite/FTS5 layer, file-type conversion (including an
 end-to-end PDF-to-markdown run through the real digitisation pipeline), the
-book compiler's retrieval + error handling (mocked model calls), and the
-FastAPI endpoints via `TestClient`.
+book compiler's retrieval + error handling for both providers (mocked model
+calls), and the FastAPI endpoints via `TestClient`.
 
 ## Data storage
 

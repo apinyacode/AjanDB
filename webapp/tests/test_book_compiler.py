@@ -22,6 +22,34 @@ class _FakeAnthropic:
         self.messages = _FakeMessages(response_text)
 
 
+class _FakeOpenAIMessage:
+    def __init__(self, content):
+        self.content = content
+
+
+class _FakeOpenAIChoice:
+    def __init__(self, content):
+        self.message = _FakeOpenAIMessage(content)
+
+
+class _FakeOpenAICompletions:
+    def __init__(self, content):
+        self._content = content
+
+    def create(self, **kwargs):
+        return SimpleNamespace(choices=[_FakeOpenAIChoice(self._content)])
+
+
+class _FakeOpenAIChat:
+    def __init__(self, content):
+        self.completions = _FakeOpenAICompletions(content)
+
+
+class _FakeOpenAI:
+    def __init__(self, content, api_key=None):
+        self.chat = _FakeOpenAIChat(content)
+
+
 def _tmp_conn(tmp_path):
     return db.get_connection(str(tmp_path / "test.sqlite3"))
 
@@ -56,6 +84,28 @@ def test_compile_book_raises_clear_error_when_no_api_key(monkeypatch, tmp_path):
         assert "ANTHROPIC_API_KEY" in str(e)
 
 
+def test_compile_book_raises_clear_error_when_no_openai_key(monkeypatch, tmp_path):
+    conn = _tmp_conn(tmp_path)
+    db.insert_document(conn, "parenting.md", "Tips on how to raise a child with patience.")
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+    try:
+        book_compiler.compile_book("compile a book about raising a child", conn, provider="openai")
+        assert False, "expected RuntimeError"
+    except RuntimeError as e:
+        assert "OPENAI_API_KEY" in str(e)
+
+
+def test_compile_book_rejects_unknown_provider(tmp_path):
+    conn = _tmp_conn(tmp_path)
+    db.insert_document(conn, "parenting.md", "Tips on how to raise a child with patience.")
+    try:
+        book_compiler.compile_book("compile a book about raising a child", conn, provider="bogus")
+        assert False, "expected ValueError"
+    except ValueError as e:
+        assert "bogus" in str(e)
+
+
 def test_compile_book_sends_matching_sources_to_model(monkeypatch, tmp_path):
     conn = _tmp_conn(tmp_path)
     db.insert_document(conn, "parenting.md", "Tips on how to raise a child with patience.")
@@ -72,3 +122,21 @@ def test_compile_book_sends_matching_sources_to_model(monkeypatch, tmp_path):
     )
     assert result["sources"] == ["parenting.md"]
     assert "A Book About Raising a Child" in result["markdown"]
+
+
+def test_compile_book_uses_openai_when_provider_selected(monkeypatch, tmp_path):
+    conn = _tmp_conn(tmp_path)
+    db.insert_document(conn, "parenting.md", "Tips on how to raise a child with patience.")
+    db.insert_document(conn, "cooking.md", "A recipe for pasta.")
+
+    monkeypatch.setattr(
+        book_compiler, "OpenAI",
+        lambda api_key=None: _FakeOpenAI("# A Book About Raising a Child (via GPT)\n\n..."),
+    )
+
+    result = book_compiler.compile_book(
+        "compile a book from all the files containing content about how to raise a child",
+        conn, provider="openai", api_key="fake",
+    )
+    assert result["sources"] == ["parenting.md"]
+    assert "via GPT" in result["markdown"]

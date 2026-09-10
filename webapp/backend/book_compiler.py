@@ -10,17 +10,36 @@ with no embeddings/vector index to run. The actual synthesis work (turning
 scattered notes into an organised book) is left entirely to the model call,
 which is what it's actually good at.
 
-Requires ANTHROPIC_API_KEY to be set for real use; the test suite mocks the
-client, consistent with the rest of this repo's approach to code that needs
-a key this environment doesn't have.
+Two providers, same prompt/output contract - pick whichever API key you
+actually have:
+  - "anthropic" (default): claude-sonnet-5. Needs ANTHROPIC_API_KEY.
+  - "openai": gpt-4o. Needs OPENAI_API_KEY.
+Neither key is the same thing as a claude.ai or ChatGPT Plus subscription -
+both are separate, billed-by-usage API credentials from each provider's own
+developer console. The test suite mocks both clients, consistent with the
+rest of this repo's approach to code that needs a key this environment
+doesn't have.
 """
 import os
 
 from anthropic import Anthropic
+from openai import OpenAI
 
 from . import db as db_module
 
-DEFAULT_MODEL = "claude-sonnet-5"
+DEFAULT_PROVIDER = "anthropic"
+
+DEFAULT_MODEL_BY_PROVIDER = {
+    "anthropic": "claude-sonnet-5",
+    "openai": "gpt-4o",
+}
+
+_API_KEY_ENV_VAR = {
+    "anthropic": "ANTHROPIC_API_KEY",
+    "openai": "OPENAI_API_KEY",
+}
+
+_PROVIDER_DISPLAY_NAME = {"anthropic": "Anthropic", "openai": "OpenAI"}
 
 SYSTEM_PROMPT = """You are compiling a book from a personal knowledge base of \
 uploaded documents. You will be given the user's instruction for what the \
@@ -58,10 +77,44 @@ def _extract_keywords(instruction: str) -> str:
     return " ".join(keywords) if keywords else instruction
 
 
-def compile_book(instruction: str, conn, model: str = DEFAULT_MODEL,
+def _call_anthropic(user_message: str, model: str, api_key: str) -> str:
+    client = Anthropic(api_key=api_key)
+    response = client.messages.create(
+        model=model,
+        max_tokens=8192,
+        system=SYSTEM_PROMPT,
+        messages=[{"role": "user", "content": user_message}],
+    )
+    return "".join(b.text for b in response.content if b.type == "text")
+
+
+def _call_openai(user_message: str, model: str, api_key: str) -> str:
+    client = OpenAI(api_key=api_key)
+    response = client.chat.completions.create(
+        model=model,
+        max_tokens=8192,
+        messages=[
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": user_message},
+        ],
+    )
+    return response.choices[0].message.content
+
+
+_CALLERS = {"anthropic": _call_anthropic, "openai": _call_openai}
+
+
+def compile_book(instruction: str, conn, provider: str = None, model: str = None,
                   api_key: str = None, max_sources: int = 20,
                   max_chars_per_source: int = 8000) -> dict:
-    """Returns {"markdown": str, "sources": [filename, ...]}."""
+    """Returns {"markdown": str, "sources": [filename, ...]}. `provider` picks
+    which API this calls ("anthropic" or "openai", default "anthropic" or
+    $LLM_PROVIDER); `model` defaults to that provider's flagship model."""
+    provider = (provider or os.environ.get("LLM_PROVIDER") or DEFAULT_PROVIDER).lower()
+    if provider not in _CALLERS:
+        raise ValueError(f"Unknown LLM provider {provider!r} - expected 'anthropic' or 'openai'")
+    model = model or DEFAULT_MODEL_BY_PROVIDER[provider]
+
     query = _extract_keywords(instruction)
     matches = db_module.search(conn, query, limit=max_sources)
 
@@ -75,12 +128,14 @@ def compile_book(instruction: str, conn, model: str = DEFAULT_MODEL,
             "sources": [],
         }
 
-    resolved_key = api_key or os.environ.get("ANTHROPIC_API_KEY")
+    env_var = _API_KEY_ENV_VAR[provider]
+    resolved_key = api_key or os.environ.get(env_var)
     if not resolved_key:
         raise RuntimeError(
-            "ANTHROPIC_API_KEY is not set. The book-compiling chatbot needs "
-            "your own Anthropic API key to synthesise a book from the "
-            "matched sources - set it in the environment the backend runs in."
+            f"{env_var} is not set. The book-compiling chatbot needs your own "
+            f"{_PROVIDER_DISPLAY_NAME[provider]} API key to synthesise a book from the matched "
+            f"sources - set it in the environment the backend runs in. This is "
+            f"not the same as a claude.ai or ChatGPT Plus subscription."
         )
 
     source_blocks = []
@@ -94,13 +149,6 @@ def compile_book(instruction: str, conn, model: str = DEFAULT_MODEL,
         f"Source documents ({len(matches)} matched):\n\n" + "\n\n".join(source_blocks)
     )
 
-    client = Anthropic(api_key=resolved_key)
-    response = client.messages.create(
-        model=model,
-        max_tokens=8192,
-        system=SYSTEM_PROMPT,
-        messages=[{"role": "user", "content": user_message}],
-    )
-    markdown = "".join(b.text for b in response.content if b.type == "text")
+    markdown = _CALLERS[provider](user_message, model, resolved_key)
 
     return {"markdown": markdown, "sources": [m["filename"] for m in matches]}

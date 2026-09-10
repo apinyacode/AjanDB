@@ -63,6 +63,36 @@ nav {
   margin-top: 0;
 }
 
+.hint.small {
+  font-size: 0.8rem;
+  margin-top: 0.6rem;
+}
+
+.hint code {
+  background: rgba(128, 128, 128, 0.18);
+  padding: 0.05rem 0.3rem;
+  border-radius: 4px;
+}
+
+.engine-row { margin-top: 0.75rem; }
+
+.engine-row label {
+  font-size: 0.85rem;
+  opacity: 0.85;
+}
+
+select {
+  padding: 0.5rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: inherit;
+  font-size: 0.9rem;
+}
+
+select:disabled { opacity: 0.5; }
+
 .row {
   display: flex;
   gap: 0.5rem;
