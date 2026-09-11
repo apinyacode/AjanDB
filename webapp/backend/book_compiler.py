@@ -139,10 +139,13 @@ def compile_book(instruction: str, conn, provider: str = None, model: str = None
         )
 
     source_blocks = []
+    source_labels = []
     for m in matches:
         full = db_module.get_document(conn, m["id"])
         content = full["markdown"][:max_chars_per_source]
-        source_blocks.append(f"--- SOURCE: {full['filename']} ---\n{content}")
+        label = f"{full['source_filename']} (page {full['page_number']}/{full['total_pages']})"
+        source_labels.append(label)
+        source_blocks.append(f"--- SOURCE: {label} ---\n{content}")
 
     user_message = (
         f"Instruction: {instruction}\n\n"
@@ -151,4 +154,4 @@ def compile_book(instruction: str, conn, provider: str = None, model: str = None
 
     markdown = _CALLERS[provider](user_message, model, resolved_key)
 
-    return {"markdown": markdown, "sources": [m["filename"] for m in matches]}
+    return {"markdown": markdown, "sources": source_labels}

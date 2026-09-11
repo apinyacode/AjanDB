@@ -19,7 +19,8 @@ engineSelect.addEventListener("change", () => {
 document.getElementById("upload-btn").addEventListener("click", async () => {
   const input = document.getElementById("file-input");
   const status = document.getElementById("upload-status");
-  const preview = document.getElementById("upload-preview");
+  const chunksEl = document.getElementById("upload-chunks");
+  const categoryInput = document.getElementById("category-input");
 
   if (!input.files.length) {
     status.textContent = "Choose a file first.";
@@ -31,22 +32,45 @@ document.getElementById("upload-btn").addEventListener("click", async () => {
   formData.append("file", input.files[0]);
   formData.append("engine", engine);
   if (engine === "vision") formData.append("provider", uploadProviderSelect.value);
+  if (categoryInput.value.trim()) formData.append("category", categoryInput.value.trim());
 
   status.textContent = engine === "vision"
     ? "Uploading & converting via vision-LLM… (one API call per scanned page, can take a while)"
     : "Uploading & converting… (PDFs with scanned pages can take a moment)";
-  preview.textContent = "";
+  chunksEl.innerHTML = "";
 
   try {
     const res = await fetch("/api/upload", { method: "POST", body: formData });
     const data = await res.json();
     if (!res.ok) throw new Error(data.detail || "Upload failed");
-    status.textContent = `Saved as document #${data.id}: ${data.filename}`;
-    preview.textContent = data.markdown;
+    const flagged = data.chunks.filter((c) => c.needs_review).length;
+    status.textContent = `Saved "${escapeHtml(data.source_filename)}" as ${data.chunks.length} chunk(s), ` +
+      `category "${escapeHtml(data.category)}"` +
+      (flagged ? ` — ${flagged} chunk(s) flagged for review.` : ".");
+    categoryInput.value = data.category;
+    renderChunks(chunksEl, data.chunks);
   } catch (err) {
     status.textContent = `Error: ${err.message}`;
   }
 });
+
+function renderChunks(container, chunks) {
+  container.innerHTML = "";
+  chunks.forEach((chunk) => {
+    const card = document.createElement("div");
+    card.className = "chunk-card" + (chunk.needs_review ? " needs-review" : "");
+    const confidenceText = chunk.confidence === null || chunk.confidence === undefined
+      ? "n/a" : `${chunk.confidence}%`;
+    card.innerHTML =
+      `<div class="chunk-meta">` +
+      `<span>Page ${chunk.page_number}</span>` +
+      `<span>Confidence: ${confidenceText}</span>` +
+      (chunk.needs_review ? `<span class="badge">Needs review</span>` : "") +
+      `</div>` +
+      `<pre class="markdown-preview">${escapeHtml(chunk.markdown)}</pre>`;
+    container.appendChild(card);
+  });
+}
 
 document.getElementById("search-btn").addEventListener("click", runSearch);
 document.getElementById("search-input").addEventListener("keydown", (e) => {
@@ -67,8 +91,14 @@ async function runSearch() {
   }
   data.forEach((doc) => {
     const li = document.createElement("li");
-    li.innerHTML = `<strong>${escapeHtml(doc.filename)}</strong> ` +
-      `(#${doc.id}, ${doc.uploaded_at})<br>${doc.snippet}`;
+    const confidenceText = doc.confidence === null || doc.confidence === undefined
+      ? "n/a" : `${doc.confidence}%`;
+    li.innerHTML =
+      `<strong>${escapeHtml(doc.source_filename)}</strong> ` +
+      `<span class="doc-meta">page ${doc.page_number}/${doc.total_pages} · ` +
+      `${escapeHtml(doc.category)} · confidence ${confidenceText}` +
+      (doc.needs_review ? ` · <span class="badge">Needs review</span>` : "") +
+      `</span><br>${doc.snippet}`;
     results.appendChild(li);
   });
 }

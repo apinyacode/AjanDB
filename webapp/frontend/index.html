@@ -36,9 +36,13 @@
         <option value="openai">GPT (OpenAI)</option>
       </select>
     </div>
-    <p class="hint small">An API key is a separate, billed-by-usage credential from your provider's developer console — not the same as a claude.ai or ChatGPT Plus subscription. Set <code>ANTHROPIC_API_KEY</code> or <code>OPENAI_API_KEY</code> in the backend's environment to use the vision engine.</p>
+    <div class="row engine-row">
+      <label for="category-input">Category</label>
+      <input type="text" id="category-input" placeholder="Leave blank to auto-suggest (needs an API key)">
+    </div>
+    <p class="hint small">An API key is a separate, billed-by-usage credential from your provider's developer console — not the same as a claude.ai or ChatGPT Plus subscription. Set <code>ANTHROPIC_API_KEY</code> or <code>OPENAI_API_KEY</code> in the backend's environment to use the vision engine or category auto-suggestion.</p>
     <p id="upload-status" class="status"></p>
-    <pre id="upload-preview" class="markdown-preview"></pre>
+    <div id="upload-chunks"></div>
   </section>
 
   <section id="search" class="tab">

@@ -54,6 +54,11 @@ def _tmp_conn(tmp_path):
     return db.get_connection(str(tmp_path / "test.sqlite3"))
 
 
+def _insert(conn, filename, content, category="Uncategorized"):
+    chunk = [{"page_number": 1, "markdown": content, "confidence": None, "needs_review": False}]
+    db.insert_chunks(conn, filename, "md", category, chunk)
+
+
 def test_extract_keywords_drops_instruction_stopwords():
     kw = book_compiler._extract_keywords(
         "compile a book from all the files containing content about how to raise a child"
@@ -66,7 +71,7 @@ def test_extract_keywords_drops_instruction_stopwords():
 
 def test_compile_book_returns_no_sources_message_when_nothing_matches(tmp_path):
     conn = _tmp_conn(tmp_path)
-    db.insert_document(conn, "cooking.md", "A recipe for pasta.")
+    _insert(conn, "cooking.md", "A recipe for pasta.")
     result = book_compiler.compile_book("compile a book about dinosaurs", conn)
     assert result["sources"] == []
     assert "No matching" in result["markdown"]
@@ -74,7 +79,7 @@ def test_compile_book_returns_no_sources_message_when_nothing_matches(tmp_path):
 
 def test_compile_book_raises_clear_error_when_no_api_key(monkeypatch, tmp_path):
     conn = _tmp_conn(tmp_path)
-    db.insert_document(conn, "parenting.md", "Tips on how to raise a child with patience.")
+    _insert(conn, "parenting.md", "Tips on how to raise a child with patience.")
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
 
     try:
@@ -86,7 +91,7 @@ def test_compile_book_raises_clear_error_when_no_api_key(monkeypatch, tmp_path):
 
 def test_compile_book_raises_clear_error_when_no_openai_key(monkeypatch, tmp_path):
     conn = _tmp_conn(tmp_path)
-    db.insert_document(conn, "parenting.md", "Tips on how to raise a child with patience.")
+    _insert(conn, "parenting.md", "Tips on how to raise a child with patience.")
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
 
     try:
@@ -98,7 +103,7 @@ def test_compile_book_raises_clear_error_when_no_openai_key(monkeypatch, tmp_pat
 
 def test_compile_book_rejects_unknown_provider(tmp_path):
     conn = _tmp_conn(tmp_path)
-    db.insert_document(conn, "parenting.md", "Tips on how to raise a child with patience.")
+    _insert(conn, "parenting.md", "Tips on how to raise a child with patience.")
     try:
         book_compiler.compile_book("compile a book about raising a child", conn, provider="bogus")
         assert False, "expected ValueError"
@@ -108,8 +113,8 @@ def test_compile_book_rejects_unknown_provider(tmp_path):
 
 def test_compile_book_sends_matching_sources_to_model(monkeypatch, tmp_path):
     conn = _tmp_conn(tmp_path)
-    db.insert_document(conn, "parenting.md", "Tips on how to raise a child with patience.")
-    db.insert_document(conn, "cooking.md", "A recipe for pasta.")
+    _insert(conn, "parenting.md", "Tips on how to raise a child with patience.")
+    _insert(conn, "cooking.md", "A recipe for pasta.")
 
     monkeypatch.setattr(
         book_compiler, "Anthropic",
@@ -120,14 +125,14 @@ def test_compile_book_sends_matching_sources_to_model(monkeypatch, tmp_path):
         "compile a book from all the files containing content about how to raise a child",
         conn, api_key="fake",
     )
-    assert result["sources"] == ["parenting.md"]
+    assert result["sources"] == ["parenting.md (page 1/1)"]
     assert "A Book About Raising a Child" in result["markdown"]
 
 
 def test_compile_book_uses_openai_when_provider_selected(monkeypatch, tmp_path):
     conn = _tmp_conn(tmp_path)
-    db.insert_document(conn, "parenting.md", "Tips on how to raise a child with patience.")
-    db.insert_document(conn, "cooking.md", "A recipe for pasta.")
+    _insert(conn, "parenting.md", "Tips on how to raise a child with patience.")
+    _insert(conn, "cooking.md", "A recipe for pasta.")
 
     monkeypatch.setattr(
         book_compiler, "OpenAI",
@@ -138,5 +143,5 @@ def test_compile_book_uses_openai_when_provider_selected(monkeypatch, tmp_path):
         "compile a book from all the files containing content about how to raise a child",
         conn, provider="openai", api_key="fake",
     )
-    assert result["sources"] == ["parenting.md"]
+    assert result["sources"] == ["parenting.md (page 1/1)"]
     assert "via GPT" in result["markdown"]

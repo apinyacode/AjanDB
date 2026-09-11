@@ -17,12 +17,18 @@ def test_upload_and_search_roundtrip(tmp_path, monkeypatch):
         files={"file": ("parenting.txt", b"Tips on how to raise a child with patience.", "text/plain")},
     )
     assert resp.status_code == 200
-    doc_id = resp.json()["id"]
+    body = resp.json()
+    assert body["source_filename"] == "parenting.txt"
+    assert body["category"] == "Uncategorized"  # no API key in test env -> falls back
+    chunk = body["chunks"][0]
+    assert chunk["page_number"] == 1
+    assert chunk["confidence"] is None
+    assert chunk["needs_review"] is False
 
     search_resp = client.get("/api/search", params={"q": "child"})
     assert search_resp.status_code == 200
     results = search_resp.json()
-    assert any(r["id"] == doc_id for r in results)
+    assert any(r["id"] == chunk["id"] for r in results)
 
 
 def test_upload_rejects_unsupported_extension(tmp_path, monkeypatch):
@@ -78,11 +84,35 @@ def test_get_document_returns_stored_markdown(tmp_path, monkeypatch):
         "/api/upload",
         files={"file": ("note.md", b"# Hello", "text/markdown")},
     )
-    doc_id = upload_resp.json()["id"]
+    doc_id = upload_resp.json()["chunks"][0]["id"]
 
     resp = client.get(f"/api/documents/{doc_id}")
     assert resp.status_code == 200
-    assert resp.json()["markdown"] == "# Hello"
+    body = resp.json()
+    assert body["markdown"] == "# Hello"
+    assert body["source_filename"] == "note.md"
+
+
+def test_upload_with_explicit_category_skips_suggestion(tmp_path, monkeypatch):
+    client = _client(tmp_path, monkeypatch)
+    resp = client.post(
+        "/api/upload",
+        files={"file": ("note.md", b"# Hello", "text/markdown")},
+        data={"category": "My Category"},
+    )
+    assert resp.json()["category"] == "My Category"
+
+
+def test_upload_multi_paragraph_txt_can_produce_multiple_chunks(tmp_path, monkeypatch):
+    client = _client(tmp_path, monkeypatch)
+    big_text = "\n\n".join(f"Paragraph {i} " + ("word " * 200) for i in range(10))
+    resp = client.post(
+        "/api/upload",
+        files={"file": ("big.txt", big_text.encode(), "text/plain")},
+    )
+    chunks = resp.json()["chunks"]
+    assert len(chunks) > 1
+    assert [c["page_number"] for c in chunks] == list(range(1, len(chunks) + 1))
 
 
 def test_chat_returns_no_sources_message_when_store_is_empty(tmp_path, monkeypatch):

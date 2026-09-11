@@ -46,7 +46,8 @@ def build_doc_items(pdf_path: str, langs: str = ocr.DEFAULT_LANGS,
 
         if block.kind == "text":
             lang = ocr.tag_language(block.text)
-            doc_items.append({"kind": "text", "lang": lang, "text": block.text})
+            # native extraction, not OCR - confidence 100 marks "not a guess"
+            doc_items.append({"kind": "text", "lang": lang, "text": block.text, "confidence": 100.0})
             stats["native_text_blocks"] += 1
 
         elif block.kind == "image":
@@ -98,7 +99,8 @@ def build_doc_items(pdf_path: str, langs: str = ocr.DEFAULT_LANGS,
                     stats["handwritten_lines"] += 1
                 else:
                     lang = ocr.tag_language(line["text"])
-                    doc_items.append({"kind": "text", "lang": lang, "text": line["text"]})
+                    doc_items.append({"kind": "text", "lang": lang, "text": line["text"],
+                                       "confidence": line["confidence"]})
                     stats["ocr_lines"] += 1
 
     return doc_items, stats

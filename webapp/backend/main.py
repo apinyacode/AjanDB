@@ -14,7 +14,7 @@ from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import book_compiler, convert, db
+from . import book_compiler, categorize, convert, db
 
 app = FastAPI(title="AjanDB")
 
@@ -29,12 +29,20 @@ async def upload(
     engine: str = Form("classical"),
     provider: str | None = Form(None),
     model: str | None = Form(None),
+    category: str | None = Form(None),
 ):
     """`engine`="vision" routes scanned PDF pages through a per-page LLM call
     (`provider`: "anthropic" or "openai") instead of local Tesseract - see
     convert.pdf_to_markdown_vision. Needs the matching API key set in the
     backend's environment; that's separate from a claude.ai/ChatGPT Plus
-    subscription."""
+    subscription.
+
+    `category` is optional - leave it blank to have it auto-suggested from
+    the converted content (falls back to "Uncategorized" if no API key is
+    available for the suggestion call; that's never a hard failure).
+
+    The file is chunked to roughly one page per row (see convert.py), each
+    carrying its own OCR confidence and a needs_review flag."""
     ext = os.path.splitext(file.filename or "")[1].lower()
     if ext not in convert.SUPPORTED_EXTENSIONS:
         raise HTTPException(400, f"Unsupported file type: {ext or '(none)'}")
@@ -44,7 +52,7 @@ async def upload(
         tmp_path = tmp.name
 
     try:
-        markdown = convert.convert_to_markdown(
+        chunks = convert.convert_to_markdown(
             tmp_path, file.filename, engine=engine, provider=provider, model=model)
     except ValueError as e:
         raise HTTPException(400, str(e))
@@ -55,13 +63,25 @@ async def upload(
     finally:
         os.unlink(tmp_path)
 
+    resolved_category = (category or "").strip()
+    if not resolved_category:
+        sample_text = "\n\n".join(c["markdown"] for c in chunks[:2])
+        resolved_category = categorize.suggest_category(
+            sample_text, provider=provider, model=model) or "Uncategorized"
+
+    source_type = ext.lstrip(".")
     conn = db.get_connection()
     try:
-        doc_id = db.insert_document(conn, file.filename, markdown)
+        chunk_ids = db.insert_chunks(conn, file.filename, source_type, resolved_category, chunks)
     finally:
         conn.close()
 
-    return {"id": doc_id, "filename": file.filename, "markdown": markdown}
+    return {
+        "source_filename": file.filename,
+        "source_type": source_type,
+        "category": resolved_category,
+        "chunks": [{"id": cid, **chunk} for cid, chunk in zip(chunk_ids, chunks)],
+    }
 
 
 @app.get("/api/documents")

@@ -50,9 +50,9 @@ PROMPT = """You are digitising a scanned book/document page for a Word document.
 Return ONLY a JSON object (no markdown fences, no commentary) shaped like:
 {
   "blocks": [
-    {"type": "text", "language": "th", "text": "...", "bbox": [x0, y0, x1, y1]},
+    {"type": "text", "language": "th", "text": "...", "bbox": [x0, y0, x1, y1], "confidence": 95},
     {"type": "photo", "bbox": [x0, y0, x1, y1]},
-    {"type": "handwriting", "text": "best-effort transcription, or null if illegible", "bbox": [x0, y0, x1, y1]}
+    {"type": "handwriting", "text": "best-effort transcription, or null if illegible", "bbox": [x0, y0, x1, y1], "confidence": 60}
   ]
 }
 
@@ -66,6 +66,10 @@ Rules:
   transcription; if genuinely illegible, set "text" to null rather than guessing.
 - "language" (text blocks only): best-guess language code (e.g. "th", "en"). If a block mixes
   languages, pick the dominant one.
+- "confidence" (text and handwriting blocks only, omit for photo): your own honest 0-100 estimate
+  of how certain you are the transcription is fully correct. 100 = certain and unambiguous, lower
+  for unclear handwriting, damaged/blurry print, or guessed characters. Be genuinely self-critical -
+  this drives a human-review flag downstream, so an overconfident score defeats its purpose.
 - Transcribe text exactly as written, including any errors in the original - don't correct or
   modernise spelling.
 - Do not skip page numbers, headers, or footers - include them as their own text blocks.

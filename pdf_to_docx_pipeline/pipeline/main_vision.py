@@ -52,7 +52,7 @@ def build_doc_items_vision(pdf_path: str, provider: str = None, model: str = Non
             last_page = block.page_number
 
         if block.kind == "text":
-            doc_items.append({"kind": "text", "lang": "unknown", "text": block.text})
+            doc_items.append({"kind": "text", "lang": "unknown", "text": block.text, "confidence": 100.0})
             stats["native_text_blocks"] += 1
 
         elif block.kind == "image":
@@ -69,7 +69,7 @@ def build_doc_items_vision(pdf_path: str, provider: str = None, model: str = Non
             for b in model_blocks:
                 if b["type"] == "text" and b.get("text"):
                     doc_items.append({"kind": "text", "lang": b.get("language", "unknown"),
-                                       "text": b["text"]})
+                                       "text": b["text"], "confidence": b.get("confidence")})
                     stats["vision_text_blocks"] += 1
 
                 elif b["type"] == "photo":
@@ -88,7 +88,8 @@ def build_doc_items_vision(pdf_path: str, provider: str = None, model: str = Non
                             # against the source without retyping from scratch
                             doc_items.append({"kind": "handwriting", "image_bytes": crop})
                             doc_items.append({"kind": "text", "lang": b.get("language", "unknown"),
-                                               "text": f"(draft transcription) {b['text']}"})
+                                               "text": f"(draft transcription) {b['text']}",
+                                               "confidence": b.get("confidence")})
                         else:
                             doc_items.append({"kind": "handwriting", "image_bytes": crop})
                         stats["handwritten_blocks"] += 1

@@ -4,6 +4,9 @@
   --bg: #fafafa;
   --border: #ccc;
   --accent: #2f5d50;
+  --danger: #a3402c;
+  --danger-bg: #fbeae6;
+  --surface: rgba(128, 128, 128, 0.12);
 }
 @media (prefers-color-scheme: dark) {
   :root {
@@ -11,6 +14,9 @@
     --bg: #1a1a1a;
     --border: #444;
     --accent: #7fb8a4;
+    --danger: #e08a73;
+    --danger-bg: #3a241f;
+    --surface: rgba(128, 128, 128, 0.18);
   }
 }
 
@@ -155,4 +161,46 @@ mark {
   background: #ffe08a;
   color: #1a1a1a;
   border-radius: 2px;
+}
+
+.chunk-card {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.75rem;
+  margin-top: 0.75rem;
+}
+
+.chunk-card.needs-review {
+  border-color: var(--danger);
+  background: var(--danger-bg);
+}
+
+.chunk-card .markdown-preview {
+  margin-top: 0.5rem;
+  max-height: 30vh;
+}
+
+.chunk-meta {
+  display: flex;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  align-items: center;
+  font-size: 0.85rem;
+  opacity: 0.85;
+}
+
+.doc-meta {
+  font-size: 0.8rem;
+  opacity: 0.75;
+  margin-left: 0.4rem;
+}
+
+.badge {
+  background: var(--danger);
+  color: white;
+  font-size: 0.75rem;
+  font-weight: 600;
+  padding: 0.1rem 0.5rem;
+  border-radius: 999px;
+  opacity: 1;
 }
