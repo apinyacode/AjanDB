@@ -131,6 +131,45 @@ button {
 
 button:hover { opacity: 0.9; }
 
+button.ghost {
+  background: transparent;
+  color: var(--fg);
+  border-color: var(--border);
+}
+
+#api-key-panel {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.75rem 1rem;
+  margin-top: 1rem;
+  background: var(--surface);
+}
+
+#api-key-panel summary {
+  cursor: pointer;
+  font-weight: 600;
+  font-size: 0.9rem;
+}
+
+#api-key-panel .row { margin-top: 0.6rem; }
+
+#api-key-panel label {
+  font-size: 0.85rem;
+  opacity: 0.85;
+  min-width: 100px;
+}
+
+input[type="password"] {
+  flex: 1;
+  min-width: 200px;
+  padding: 0.5rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: inherit;
+}
+
 .status {
   min-height: 1.2em;
   font-size: 0.9rem;

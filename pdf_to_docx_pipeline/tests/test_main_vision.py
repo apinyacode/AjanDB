@@ -7,7 +7,7 @@ from docx import Document
 from pipeline import main_vision
 
 
-def _fake_extract_page_with_vision(png_bytes, model=None, provider=None):
+def _fake_extract_page_with_vision(png_bytes, model=None, provider=None, api_key=None):
     from PIL import Image
     import io as _io
 

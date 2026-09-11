@@ -1,3 +1,59 @@
+// --- API keys: browser-local only, never sent anywhere but this page's own backend ---
+const LS_ANTHROPIC_KEY = "ajandb_anthropic_key";
+const LS_OPENAI_KEY = "ajandb_openai_key";
+const anthropicKeyInput = document.getElementById("anthropic-key-input");
+const openaiKeyInput = document.getElementById("openai-key-input");
+const keyStatus = document.getElementById("key-status");
+
+function safeLocalStorage() {
+  try {
+    localStorage.setItem("__ajandb_test__", "1");
+    localStorage.removeItem("__ajandb_test__");
+    return localStorage;
+  } catch {
+    return null;
+  }
+}
+const storage = safeLocalStorage();
+
+function loadStoredKeys() {
+  if (!storage) {
+    keyStatus.textContent = "Browser storage unavailable — keys won't be remembered between visits.";
+    return;
+  }
+  anthropicKeyInput.value = storage.getItem(LS_ANTHROPIC_KEY) || "";
+  openaiKeyInput.value = storage.getItem(LS_OPENAI_KEY) || "";
+}
+loadStoredKeys();
+
+function persistKey(input, storageKey) {
+  input.addEventListener("input", () => {
+    if (!storage) return;
+    if (input.value) storage.setItem(storageKey, input.value);
+    else storage.removeItem(storageKey);
+  });
+}
+persistKey(anthropicKeyInput, LS_ANTHROPIC_KEY);
+persistKey(openaiKeyInput, LS_OPENAI_KEY);
+
+document.getElementById("clear-keys-btn").addEventListener("click", () => {
+  anthropicKeyInput.value = "";
+  openaiKeyInput.value = "";
+  if (storage) {
+    storage.removeItem(LS_ANTHROPIC_KEY);
+    storage.removeItem(LS_OPENAI_KEY);
+  }
+  keyStatus.textContent = "Cleared.";
+  setTimeout(() => { keyStatus.textContent = ""; }, 2000);
+});
+
+function currentApiKeys() {
+  return {
+    anthropic_api_key: anthropicKeyInput.value.trim() || undefined,
+    openai_api_key: openaiKeyInput.value.trim() || undefined,
+  };
+}
+
 const tabButtons = document.querySelectorAll(".tab-btn");
 const tabSections = document.querySelectorAll(".tab");
 
@@ -33,6 +89,9 @@ document.getElementById("upload-btn").addEventListener("click", async () => {
   formData.append("engine", engine);
   if (engine === "vision") formData.append("provider", uploadProviderSelect.value);
   if (categoryInput.value.trim()) formData.append("category", categoryInput.value.trim());
+  const keys = currentApiKeys();
+  if (keys.anthropic_api_key) formData.append("anthropic_api_key", keys.anthropic_api_key);
+  if (keys.openai_api_key) formData.append("openai_api_key", keys.openai_api_key);
 
   status.textContent = engine === "vision"
     ? "Uploading & converting via vision-LLM… (one API call per scanned page, can take a while)"
@@ -118,7 +177,7 @@ document.getElementById("chat-btn").addEventListener("click", async () => {
     const res = await fetch("/api/chat", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ instruction, provider }),
+      body: JSON.stringify({ instruction, provider, ...currentApiKeys() }),
     });
     const data = await res.json();
     if (!res.ok) throw new Error(data.detail || "Compile failed");

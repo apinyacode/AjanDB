@@ -144,15 +144,18 @@ def pdf_to_markdown(pdf_path: str, langs: str = None) -> list[dict]:
     return items_to_chunks(doc_items)
 
 
-def pdf_to_markdown_vision(pdf_path: str, provider: str = None, model: str = None) -> list[dict]:
+def pdf_to_markdown_vision(pdf_path: str, provider: str = None, model: str = None,
+                            api_key: str = None) -> list[dict]:
     """Same as pdf_to_markdown, but scanned pages go through a vision-LLM
     (Claude or GPT-4o, see pipeline/vision_ocr.py) instead of local
     Tesseract - better at messy real-world scans and non-Latin scripts, at
-    the cost of a per-page API call. Needs ANTHROPIC_API_KEY or
-    OPENAI_API_KEY set in the backend's environment, matching `provider`.
-    Confidence per chunk is the model's own self-reported estimate, not a
-    calibrated metric like Tesseract's - treat it as a rough signal."""
-    doc_items, _ = build_doc_items_vision(pdf_path, provider=provider, model=model)
+    the cost of a per-page API call. Needs an API key matching `provider`,
+    either passed as `api_key` (e.g. typed into the frontend, browser-side
+    only) or via ANTHROPIC_API_KEY/OPENAI_API_KEY in the backend's
+    environment. Confidence per chunk is the model's own self-reported
+    estimate, not a calibrated metric like Tesseract's - treat it as a rough
+    signal."""
+    doc_items, _ = build_doc_items_vision(pdf_path, provider=provider, model=model, api_key=api_key)
     return items_to_chunks(doc_items)
 
 
@@ -170,15 +173,17 @@ def text_to_markdown(text_path: str) -> list[dict]:
 
 
 def convert_to_markdown(file_path: str, filename: str, engine: str = "classical",
-                         provider: str = None, model: str = None) -> list[dict]:
+                         provider: str = None, model: str = None,
+                         api_key: str = None) -> list[dict]:
     """`engine`: "classical" (default, free, local Tesseract) or "vision"
-    (per-page LLM call via `provider`/`model` - see pdf_to_markdown_vision).
-    Only affects PDFs; other file types have nothing to digitise. Returns a
-    list of chunk dicts, each no bigger than roughly one page."""
+    (per-page LLM call via `provider`/`model`/`api_key` - see
+    pdf_to_markdown_vision). Only affects PDFs; other file types have
+    nothing to digitise. Returns a list of chunk dicts, each no bigger than
+    roughly one page."""
     ext = os.path.splitext(filename)[1].lower()
     if ext == ".pdf":
         if engine == "vision":
-            return pdf_to_markdown_vision(file_path, provider=provider, model=model)
+            return pdf_to_markdown_vision(file_path, provider=provider, model=model, api_key=api_key)
         if engine != "classical":
             raise ValueError(f"Unknown conversion engine {engine!r} - expected 'classical' or 'vision'")
         return pdf_to_markdown(file_path)

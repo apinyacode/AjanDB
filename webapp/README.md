@@ -47,24 +47,32 @@ uvicorn backend.main:app --reload --app-dir .
 Then open http://127.0.0.1:8000/ - the backend serves the frontend directly,
 so there's nothing separate to run for the UI.
 
-The "Compile a book" tab, and the Vision-LLM upload engine, need an API key
-set in the backend's environment - pick whichever provider you actually
-have (neither is the same thing as a claude.ai or ChatGPT Plus
-*subscription*; both are separate, billed-by-usage API keys from that
-provider's own developer console):
+The "Data Generation" tab, and the Vision-LLM upload engine, need an API key
+- pick whichever provider you actually have (neither is the same thing as a
+claude.ai or ChatGPT Plus *subscription*; both are separate, billed-by-usage
+API keys from that provider's own developer console). Two ways to supply
+one:
 
-```bash
-export ANTHROPIC_API_KEY=sk-ant-...   # for the Claude option
-# and/or
-export OPENAI_API_KEY=sk-...          # for the GPT option
-```
+- **Type it into the page** - the "API Keys" panel at the top stores it in
+  that browser's `localStorage` only (never sent anywhere but this page's
+  own backend, never persisted server-side or in the database, never logged).
+  Convenient when you're the only user and don't want to fuss with shell
+  environments.
+- **Set it in the backend's environment** - the usual way, shared by every
+  visitor of this instance:
+  ```bash
+  export ANTHROPIC_API_KEY=sk-ant-...   # for the Claude option
+  # and/or
+  export OPENAI_API_KEY=sk-...          # for the GPT option
+  ```
 
-The frontend lets you pick Claude or GPT per upload/compile request; without
-the matching key set, that request returns a clear error rather than
-crashing (tested; the actual model calls are mocked in the test suite since
-no key is available in this environment). `$LLM_PROVIDER` /
-`$VISION_LLM_PROVIDER` set the server-side default when the frontend doesn't
-specify one.
+A browser-supplied key takes priority over the environment for that request;
+falls back to the environment when the field is left blank. The frontend
+lets you pick Claude or GPT per upload/compile request; without a usable key
+either way, that request returns a clear error rather than crashing (tested;
+the actual model calls are mocked in the test suite since no key is
+available in this environment). `$LLM_PROVIDER` / `$VISION_LLM_PROVIDER` set
+the server-side default provider when the frontend doesn't specify one.
 
 ## Test
 
@@ -72,11 +80,12 @@ specify one.
 python3 -m pytest tests/ -v
 ```
 
-84 tests total (37 in the pipeline, 47 here) covering the SQLite/FTS5 layer
+87 tests total (37 in the pipeline, 50 here) covering the SQLite/FTS5 layer
 (including confidence/needs_review/category columns), chunking (per-page for
 PDFs, character-budget for plain text), category suggestion (mocked model
 calls, graceful no-key fallback), the book compiler's retrieval + error
-handling for both providers, and the FastAPI endpoints via `TestClient`.
+handling for both providers, browser-supplied key resolution/priority, and
+the FastAPI endpoints via `TestClient`.
 
 ## Data storage
 

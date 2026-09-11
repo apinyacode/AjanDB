@@ -16,6 +16,30 @@
   </nav>
 </header>
 
+<details id="api-key-panel">
+  <summary>API Keys</summary>
+  <p class="hint small">
+    Stored only in <strong>this browser's</strong> local storage — never sent anywhere except
+    with your own requests to this page's backend, and never saved server-side or in the
+    database. Neither key is the same as a claude.ai or ChatGPT Plus subscription; both are
+    separate, billed-by-usage credentials from that provider's own developer console
+    (console.anthropic.com / platform.openai.com). Leave both blank to fall back to whatever
+    the backend's own environment has configured.
+  </p>
+  <div class="row">
+    <label for="anthropic-key-input">Anthropic key</label>
+    <input type="password" id="anthropic-key-input" placeholder="sk-ant-..." autocomplete="off">
+  </div>
+  <div class="row">
+    <label for="openai-key-input">OpenAI key</label>
+    <input type="password" id="openai-key-input" placeholder="sk-..." autocomplete="off">
+  </div>
+  <div class="row">
+    <button id="clear-keys-btn" type="button" class="ghost">Clear stored keys</button>
+    <span id="key-status" class="status"></span>
+  </div>
+</details>
+
 <main>
   <section id="upload" class="tab active">
     <h2>Data Store</h2>
@@ -40,7 +64,7 @@
       <label for="category-input">Category</label>
       <input type="text" id="category-input" placeholder="Leave blank to auto-suggest (needs an API key)">
     </div>
-    <p class="hint small">An API key is a separate, billed-by-usage credential from your provider's developer console — not the same as a claude.ai or ChatGPT Plus subscription. Set <code>ANTHROPIC_API_KEY</code> or <code>OPENAI_API_KEY</code> in the backend's environment to use the vision engine or category auto-suggestion.</p>
+    <p class="hint small">The vision engine and category auto-suggestion need an API key — set one in the <strong>API Keys</strong> panel above, or leave it to the backend's own environment.</p>
     <p id="upload-status" class="status"></p>
     <div id="upload-chunks"></div>
   </section>

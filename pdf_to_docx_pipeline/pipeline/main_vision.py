@@ -33,7 +33,7 @@ def _crop_png(color_img: np.ndarray, bbox_px: tuple) -> bytes:
 
 
 def build_doc_items_vision(pdf_path: str, provider: str = None, model: str = None,
-                            dpi: int = 200):
+                            api_key: str = None, dpi: int = 200):
     """Runs the vision-LLM engine (stage 1 native extraction + stage 2 vision
     OCR for scanned pages) and returns the ordered content items plus run
     stats, without assembling a .docx - split out from run() so other
@@ -64,7 +64,8 @@ def build_doc_items_vision(pdf_path: str, provider: str = None, model: str = Non
             png_bytes = extract.render_page_for_ocr(pdf_path, block.page_number, dpi=dpi)
             color_img = cv2.imdecode(np.frombuffer(png_bytes, dtype=np.uint8), cv2.IMREAD_COLOR)
 
-            model_blocks = vision_ocr.extract_page_with_vision(png_bytes, model=model, provider=provider)
+            model_blocks = vision_ocr.extract_page_with_vision(
+                png_bytes, model=model, provider=provider, api_key=api_key)
 
             for b in model_blocks:
                 if b["type"] == "text" and b.get("text"):
@@ -98,8 +99,9 @@ def build_doc_items_vision(pdf_path: str, provider: str = None, model: str = Non
 
 
 def run(pdf_path: str, output_path: str, provider: str = None, model: str = None,
-        dpi: int = 200):
-    doc_items, stats = build_doc_items_vision(pdf_path, provider=provider, model=model, dpi=dpi)
+        api_key: str = None, dpi: int = 200):
+    doc_items, stats = build_doc_items_vision(
+        pdf_path, provider=provider, model=model, api_key=api_key, dpi=dpi)
     assemble.build_docx(doc_items, output_path)
     return stats
 
