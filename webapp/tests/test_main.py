@@ -1,3 +1,5 @@
+import time
+
 from fastapi.testclient import TestClient
 
 from backend import db, main as main_module
@@ -10,10 +12,28 @@ def _client(tmp_path, monkeypatch):
     return TestClient(main_module.app)
 
 
+def _upload_and_wait(client, timeout=10, **kwargs):
+    """Uploads now return a job id immediately (see main.py's comment on
+    _jobs) - conversion happens in a background thread so no single request
+    has to survive however long OCR takes. Tests poll the job endpoint just
+    like the real frontend does, instead of expecting an immediate result."""
+    resp = client.post("/api/upload", **kwargs)
+    assert resp.status_code == 200, resp.text
+    job_id = resp.json()["job_id"]
+
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        poll = client.get(f"/api/upload/{job_id}")
+        if poll.status_code != 200 or poll.json().get("status") != "processing":
+            return poll
+        time.sleep(0.05)
+    raise TimeoutError(f"upload job {job_id} did not finish within {timeout}s")
+
+
 def test_upload_and_search_roundtrip(tmp_path, monkeypatch):
     client = _client(tmp_path, monkeypatch)
-    resp = client.post(
-        "/api/upload",
+    resp = _upload_and_wait(
+        client,
         files={"file": ("parenting.txt", b"Tips on how to raise a child with patience.", "text/plain")},
     )
     assert resp.status_code == 200
@@ -32,6 +52,8 @@ def test_upload_and_search_roundtrip(tmp_path, monkeypatch):
 
 
 def test_upload_rejects_unsupported_extension(tmp_path, monkeypatch):
+    # This is checked before a job is even created, so it's still a plain
+    # synchronous 400 on the POST itself - no polling involved.
     client = _client(tmp_path, monkeypatch)
     resp = client.post(
         "/api/upload",
@@ -42,13 +64,19 @@ def test_upload_rejects_unsupported_extension(tmp_path, monkeypatch):
 
 def test_upload_rejects_unknown_engine(tmp_path, monkeypatch):
     client = _client(tmp_path, monkeypatch)
-    resp = client.post(
-        "/api/upload",
+    resp = _upload_and_wait(
+        client,
         files={"file": ("note.txt", b"hello", "text/plain")},
         data={"engine": "bogus"},
     )
     # engine only matters for PDFs; a .txt upload never reaches the check
     assert resp.status_code == 200
+
+
+def test_upload_unknown_job_id_returns_404(tmp_path, monkeypatch):
+    client = _client(tmp_path, monkeypatch)
+    resp = client.get("/api/upload/not-a-real-job-id")
+    assert resp.status_code == 404
 
 
 def test_resolve_client_key_picks_matching_provider():
@@ -79,8 +107,8 @@ def test_upload_vision_engine_succeeds_with_browser_supplied_key(tmp_path, monke
     doc.close()
 
     with open(pdf_path, "rb") as f:
-        resp = client.post(
-            "/api/upload",
+        resp = _upload_and_wait(
+            client,
             files={"file": ("blank.pdf", f, "application/pdf")},
             data={"engine": "vision", "anthropic_api_key": "browser-key-123"},
         )
@@ -100,8 +128,8 @@ def test_upload_pdf_with_vision_engine_returns_503_without_api_key(tmp_path, mon
 
     client = _client(tmp_path, monkeypatch)
     with open(pdf_path, "rb") as f:
-        resp = client.post(
-            "/api/upload",
+        resp = _upload_and_wait(
+            client,
             files={"file": ("blank.pdf", f, "application/pdf")},
             data={"engine": "vision"},
         )
@@ -117,8 +145,8 @@ def test_get_document_404_for_missing_id(tmp_path, monkeypatch):
 
 def test_get_document_returns_stored_markdown(tmp_path, monkeypatch):
     client = _client(tmp_path, monkeypatch)
-    upload_resp = client.post(
-        "/api/upload",
+    upload_resp = _upload_and_wait(
+        client,
         files={"file": ("note.md", b"# Hello", "text/markdown")},
     )
     doc_id = upload_resp.json()["chunks"][0]["id"]
@@ -132,8 +160,8 @@ def test_get_document_returns_stored_markdown(tmp_path, monkeypatch):
 
 def test_upload_with_explicit_category_skips_suggestion(tmp_path, monkeypatch):
     client = _client(tmp_path, monkeypatch)
-    resp = client.post(
-        "/api/upload",
+    resp = _upload_and_wait(
+        client,
         files={"file": ("note.md", b"# Hello", "text/markdown")},
         data={"category": "My Category"},
     )
@@ -143,8 +171,8 @@ def test_upload_with_explicit_category_skips_suggestion(tmp_path, monkeypatch):
 def test_upload_multi_paragraph_txt_can_produce_multiple_chunks(tmp_path, monkeypatch):
     client = _client(tmp_path, monkeypatch)
     big_text = "\n\n".join(f"Paragraph {i} " + ("word " * 200) for i in range(10))
-    resp = client.post(
-        "/api/upload",
+    resp = _upload_and_wait(
+        client,
         files={"file": ("big.txt", big_text.encode(), "text/plain")},
     )
     chunks = resp.json()["chunks"]
@@ -162,8 +190,8 @@ def test_chat_returns_no_sources_message_when_store_is_empty(tmp_path, monkeypat
 def test_chat_returns_503_when_sources_match_but_no_api_key(tmp_path, monkeypatch):
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     client = _client(tmp_path, monkeypatch)
-    client.post(
-        "/api/upload",
+    _upload_and_wait(
+        client,
         files={"file": ("parenting.txt", b"Tips on how to raise a child.", "text/plain")},
     )
     resp = client.post("/api/chat", json={"instruction": "compile a book about raising a child"})
@@ -174,8 +202,8 @@ def test_chat_returns_503_when_sources_match_but_no_api_key(tmp_path, monkeypatc
 def test_chat_with_openai_provider_returns_503_when_no_openai_key(tmp_path, monkeypatch):
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     client = _client(tmp_path, monkeypatch)
-    client.post(
-        "/api/upload",
+    _upload_and_wait(
+        client,
         files={"file": ("parenting.txt", b"Tips on how to raise a child.", "text/plain")},
     )
     resp = client.post(
@@ -189,8 +217,8 @@ def test_chat_with_openai_provider_returns_503_when_no_openai_key(tmp_path, monk
 def test_chat_succeeds_with_browser_supplied_key(tmp_path, monkeypatch):
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     client = _client(tmp_path, monkeypatch)
-    client.post(
-        "/api/upload",
+    _upload_and_wait(
+        client,
         files={"file": ("parenting.txt", b"Tips on how to raise a child.", "text/plain")},
     )
 
@@ -212,8 +240,8 @@ def test_chat_succeeds_with_browser_supplied_key(tmp_path, monkeypatch):
 
 def test_chat_rejects_unknown_provider_with_400(tmp_path, monkeypatch):
     client = _client(tmp_path, monkeypatch)
-    client.post(
-        "/api/upload",
+    _upload_and_wait(
+        client,
         files={"file": ("parenting.txt", b"Tips on how to raise a child.", "text/plain")},
     )
     resp = client.post(

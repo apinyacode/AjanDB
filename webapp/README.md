@@ -18,7 +18,12 @@ as searchable markdown, and compiling a book from whatever matches a topic.
   whenever a page contains handwriting or a low-confidence OCR region the
   pipeline couldn't transcribe reliably, or its average confidence drops
   below 75 - so uncertain conversions surface for a human to check instead
-  of silently passing as fact.
+  of silently passing as fact. Conversion runs in a background thread and
+  `POST /api/upload` returns a job id immediately - the frontend polls
+  `GET /api/upload/{job_id}` every couple of seconds until it's done, so a
+  many-minute OCR job never depends on one HTTP connection staying alive
+  the whole time (real books can take that long; tunnels and browsers tend
+  to give up on a single long-lived request well before that).
 - **Data Search** — full-text keyword search (SQLite FTS5) over every stored
   chunk, returning matches with their filename, page number, category,
   confidence, review flag, and a highlighted snippet.
@@ -101,12 +106,12 @@ the server-side default provider when the frontend doesn't specify one.
 python3 -m pytest tests/ -v
 ```
 
-87 tests total (37 in the pipeline, 50 here) covering the SQLite/FTS5 layer
+88 tests total (37 in the pipeline, 51 here) covering the SQLite/FTS5 layer
 (including confidence/needs_review/category columns), chunking (per-page for
 PDFs, character-budget for plain text), category suggestion (mocked model
 calls, graceful no-key fallback), the book compiler's retrieval + error
-handling for both providers, browser-supplied key resolution/priority, and
-the FastAPI endpoints via `TestClient`.
+handling for both providers, browser-supplied key resolution/priority, the
+background upload-job lifecycle, and the FastAPI endpoints via `TestClient`.
 
 ## Data storage
 
@@ -138,3 +143,13 @@ column layout.
 - The vision-LLM engine's confidence score is the model's own self-reported
   estimate, not a calibrated metric like Tesseract's - treat it as a rough
   signal, not ground truth.
+- Upload job status is kept in memory, not the database - a server restart
+  mid-conversion loses that job (re-upload the file). Fine for a
+  single-process personal tool; a persisted job table would be the fix if
+  this ever runs somewhere restarts are frequent.
+- `/api/chat` (Data Generation) is still a single synchronous request - for
+  a very large matched-source set this could hit the same
+  long-connection/tunnel-timeout problem uploads used to have. Not yet
+  observed in practice (compiling is normally one fast model call), but the
+  same background-job pattern used for uploads would be the fix if it comes
+  up.

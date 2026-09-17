@@ -93,23 +93,44 @@ document.getElementById("upload-btn").addEventListener("click", async () => {
   if (keys.anthropic_api_key) formData.append("anthropic_api_key", keys.anthropic_api_key);
   if (keys.openai_api_key) formData.append("openai_api_key", keys.openai_api_key);
 
-  status.textContent = engine === "vision"
-    ? "Uploading & converting via vision-LLM… (one API call per scanned page, can take a while)"
-    : "Uploading & converting… (PDFs with scanned pages can take a moment)";
   chunksEl.innerHTML = "";
+  const uploadBtn = document.getElementById("upload-btn");
+  uploadBtn.disabled = true;
+  const startedAt = Date.now();
 
   try {
     const res = await fetch("/api/upload", { method: "POST", body: formData });
     const data = await res.json();
     if (!res.ok) throw new Error(data.detail || "Upload failed");
-    const flagged = data.chunks.filter((c) => c.needs_review).length;
-    status.textContent = `Saved "${escapeHtml(data.source_filename)}" as ${data.chunks.length} chunk(s), ` +
-      `category "${escapeHtml(data.category)}"` +
-      (flagged ? ` — ${flagged} chunk(s) flagged for review.` : ".");
-    categoryInput.value = data.category;
-    renderChunks(chunksEl, data.chunks);
+
+    // Conversion runs in the background and can take a long time for
+    // scanned PDFs (real OCR, not instant) - poll for the result instead of
+    // waiting on one long-lived request, which tunnels/proxies tend to cut
+    // off after a few minutes.
+    while (true) {
+      const elapsed = Math.round((Date.now() - startedAt) / 1000);
+      status.textContent = engine === "vision"
+        ? `Converting via vision-LLM… (${elapsed}s elapsed, one API call per scanned page)`
+        : `Converting… (${elapsed}s elapsed)`;
+      await new Promise((r) => setTimeout(r, 2000));
+
+      const pollRes = await fetch(`/api/upload/${data.job_id}`);
+      const pollData = await pollRes.json();
+      if (!pollRes.ok) throw new Error(pollData.detail || "Conversion failed");
+      if (pollData.status === "processing") continue;
+
+      const flagged = pollData.chunks.filter((c) => c.needs_review).length;
+      status.textContent = `Saved "${escapeHtml(pollData.source_filename)}" as ${pollData.chunks.length} chunk(s), ` +
+        `category "${escapeHtml(pollData.category)}"` +
+        (flagged ? ` — ${flagged} chunk(s) flagged for review.` : ".");
+      categoryInput.value = pollData.category;
+      renderChunks(chunksEl, pollData.chunks);
+      break;
+    }
   } catch (err) {
     status.textContent = `Error: ${err.message}`;
+  } finally {
+    uploadBtn.disabled = false;
   }
 });
 
