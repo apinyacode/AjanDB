@@ -1,3 +1,5 @@
+import os
+
 import pytest
 
 from backend import convert
@@ -135,3 +137,41 @@ def test_pdf_to_markdown_extracts_text_as_per_page_chunks(tmp_path):
     page3 = chunks[2]
     assert "Not shown as text" in page3["markdown"]  # the simulated handwriting
     assert page3["needs_review"] is True
+
+
+def test_pdf_to_markdown_reports_progress_per_page(tmp_path):
+    import make_test_pdf
+
+    pdf_path = make_test_pdf.build(str(tmp_path / "sample.pdf"))
+    seen = []
+    convert.pdf_to_markdown(pdf_path, langs="eng+tha", progress=lambda p, t: seen.append((p, t)))
+    assert seen == [(0, 3), (1, 3), (2, 3)]
+
+
+def test_get_pdf_page_count(tmp_path):
+    import make_test_pdf
+
+    pdf_path = make_test_pdf.build(str(tmp_path / "sample.pdf"))
+    assert convert.get_pdf_page_count(pdf_path) == 3
+
+
+def test_extract_single_page_pdf_produces_a_one_page_file_with_matching_content(tmp_path):
+    import make_test_pdf
+
+    pdf_path = make_test_pdf.build(str(tmp_path / "sample.pdf"))
+    single_page_path = convert.extract_single_page_pdf(pdf_path, 0)
+    try:
+        assert convert.get_pdf_page_count(single_page_path) == 1
+        chunks = convert.pdf_to_markdown(single_page_path, langs="eng+tha")
+        assert len(chunks) == 1
+        assert "Field Visit Notes" in chunks[0]["markdown"]
+    finally:
+        os.unlink(single_page_path)
+
+
+def test_render_page_preview_returns_png_bytes(tmp_path):
+    import make_test_pdf
+
+    pdf_path = make_test_pdf.build(str(tmp_path / "sample.pdf"))
+    png_bytes = convert.render_page_preview(pdf_path, 0)
+    assert png_bytes[:8] == b"\x89PNG\r\n\x1a\n"

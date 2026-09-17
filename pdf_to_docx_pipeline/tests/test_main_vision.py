@@ -41,3 +41,16 @@ def test_main_vision_run_end_to_end(sample_pdf_path, tmp_path, monkeypatch):
     text = "\n".join(p.text for p in doc.paragraphs)
     assert "Mocked OCR line" in text
     assert "(draft transcription) draft note" in text
+
+
+def test_build_doc_items_vision_calls_progress_once_per_page(sample_pdf_path, monkeypatch):
+    from pipeline.main_vision import build_doc_items_vision
+
+    monkeypatch.setattr(
+        main_vision.vision_ocr, "extract_page_with_vision",
+        _fake_extract_page_with_vision,
+    )
+    seen = []
+    build_doc_items_vision(sample_pdf_path, progress=lambda p, t: seen.append((p, t)))
+
+    assert seen == [(0, 3), (1, 3), (2, 3)]

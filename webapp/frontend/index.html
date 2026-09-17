@@ -64,9 +64,39 @@
       <label for="category-input">Category</label>
       <input type="text" id="category-input" placeholder="Leave blank to auto-suggest (needs an API key)">
     </div>
+    <div class="row engine-row">
+      <label class="checkbox-label">
+        <input type="checkbox" id="review-mode-checkbox">
+        Review each page before saving (PDF only)
+      </label>
+    </div>
     <p class="hint small">The vision engine and category auto-suggestion need an API key — set one in the <strong>API Keys</strong> panel above, or leave it to the backend's own environment.</p>
     <p id="upload-status" class="status"></p>
     <div id="upload-chunks"></div>
+
+    <div id="review-panel" class="review-panel hidden">
+      <div class="row review-header">
+        <strong id="review-progress"></strong>
+        <span id="review-badges"></span>
+      </div>
+      <div class="review-columns">
+        <div class="review-col">
+          <h3>Scanned page</h3>
+          <img id="review-image" alt="Scanned page preview">
+        </div>
+        <div class="review-col">
+          <h3>Converted text (editable)</h3>
+          <textarea id="review-markdown" rows="18"></textarea>
+        </div>
+      </div>
+      <div class="row">
+        <button id="review-approve-btn">Approve &amp; Save</button>
+        <button id="review-skip-btn" class="ghost" type="button">Skip (don't save)</button>
+        <button id="review-retry-btn" class="ghost hidden" type="button">Retry this page</button>
+        <button id="review-cancel-btn" class="ghost" type="button">Cancel review</button>
+      </div>
+      <p id="review-status" class="status"></p>
+    </div>
   </section>
 
   <section id="search" class="tab">

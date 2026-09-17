@@ -16,7 +16,7 @@ from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import book_compiler, categorize, convert, db
+from . import book_compiler, categorize, convert, db, review
 
 app = FastAPI(title="AjanDB")
 
@@ -61,26 +61,40 @@ def _set_job(job_id: str, **fields):
         _jobs[job_id] = fields
 
 
+def _upload_log(job_id: str, message: str):
+    print(f"[upload {job_id[:8]}] {message}", flush=True)
+
+
 def _run_upload_job(job_id: str, tmp_path: str, filename: str, ext: str,
                      engine: str, provider: str | None, model: str | None,
                      category: str | None, anthropic_api_key: str | None,
                      openai_api_key: str | None):
     vision_key = _resolve_client_key(provider, anthropic_api_key, openai_api_key)
+    _upload_log(job_id, f"Starting: {filename} (engine={engine}, provider={provider or 'default'})")
+
+    def _progress(page_number: int, total_pages: int):
+        _upload_log(job_id, f"{filename}: page {page_number + 1}/{total_pages}")
+
     try:
         chunks = convert.convert_to_markdown(
             tmp_path, filename, engine=engine, provider=provider, model=model,
-            api_key=vision_key)
+            api_key=vision_key, progress=_progress)
     except ValueError as e:
+        _upload_log(job_id, f"ERROR: {e}")
         _set_job(job_id, status="error", code=400, detail=str(e))
         return
     except RuntimeError as e:
+        _upload_log(job_id, f"ERROR: {e}")
         _set_job(job_id, status="error", code=503, detail=str(e))
         return
     except Exception as e:
+        _upload_log(job_id, f"ERROR: Failed to convert {filename}: {e}")
         _set_job(job_id, status="error", code=422, detail=f"Failed to convert {filename}: {e}")
         return
     finally:
         os.unlink(tmp_path)
+
+    _upload_log(job_id, f"Converted {filename}: {len(chunks)} chunk(s)")
 
     resolved_category = (category or "").strip()
     if not resolved_category:
@@ -102,6 +116,7 @@ def _run_upload_job(job_id: str, tmp_path: str, filename: str, ext: str,
     finally:
         conn.close()
 
+    _upload_log(job_id, f"Done: saved {len(chunk_ids)} chunk(s), category '{resolved_category}'")
     _set_job(
         job_id, status="done",
         result={
@@ -169,6 +184,103 @@ def upload_status(job_id: str):
     if job["status"] == "error":
         raise HTTPException(job["code"], job["detail"])
     return {"status": "done", **job["result"]}
+
+
+class ReviewApproveRequest(BaseModel):
+    markdown: str | None = None  # a human edit to save instead of the converted text, if given
+    needs_review: bool | None = None  # override the auto-computed flag, if given
+
+
+@app.post("/api/review/start")
+async def review_start(
+    file: UploadFile = File(...),
+    engine: str = Form("classical"),
+    provider: str | None = Form(None),
+    model: str | None = Form(None),
+    langs: str | None = Form(None),
+    category: str | None = Form(None),
+    anthropic_api_key: str | None = Form(None),
+    openai_api_key: str | None = Form(None),
+):
+    """Starts a page-by-page review session: converts and returns page 1
+    immediately, alongside a rendered preview image, so the frontend can
+    show scan-vs-markdown side by side and let a human approve (optionally
+    after editing) or skip each page before it's saved - see
+    backend/review.py for the full flow. PDF only; other file types have no
+    OCR step for a human to check page-by-page."""
+    ext = os.path.splitext(file.filename or "")[1].lower()
+    if ext != ".pdf":
+        raise HTTPException(400, "Page-by-page review is only supported for PDFs")
+    if engine not in ("classical", "vision"):
+        raise HTTPException(400, f"Unknown conversion engine {engine!r} - expected 'classical' or 'vision'")
+
+    api_key = _resolve_client_key(provider, anthropic_api_key, openai_api_key)
+
+    with tempfile.NamedTemporaryFile(suffix=ext, delete=False) as tmp:
+        shutil.copyfileobj(file.file, tmp)
+        tmp_path = tmp.name
+
+    try:
+        return review.start(
+            tmp_path, file.filename, engine=engine, provider=provider, model=model,
+            langs=langs, category=category, api_key=api_key)
+    except ValueError as e:
+        os.unlink(tmp_path)
+        raise HTTPException(400, str(e))
+    except RuntimeError as e:
+        os.unlink(tmp_path)
+        raise HTTPException(503, str(e))
+    except Exception as e:
+        os.unlink(tmp_path)
+        raise HTTPException(422, f"Failed to convert page 1 of {file.filename}: {e}")
+
+
+@app.post("/api/review/{session_id}/approve")
+def review_approve(session_id: str, req: ReviewApproveRequest):
+    try:
+        return review.approve(session_id, markdown=req.markdown, needs_review=req.needs_review)
+    except KeyError:
+        raise HTTPException(404, "Unknown review session")
+    except RuntimeError as e:
+        raise HTTPException(503, str(e))
+    except Exception as e:
+        raise HTTPException(422, f"Failed to convert the next page: {e}")
+
+
+@app.post("/api/review/{session_id}/skip")
+def review_skip(session_id: str):
+    try:
+        return review.skip(session_id)
+    except KeyError:
+        raise HTTPException(404, "Unknown review session")
+    except RuntimeError as e:
+        raise HTTPException(503, str(e))
+    except Exception as e:
+        raise HTTPException(422, f"Failed to convert the next page: {e}")
+
+
+@app.post("/api/review/{session_id}/retry")
+def review_retry(session_id: str):
+    """Re-attempts converting the page after the last approve()/skip() call -
+    use this if that request failed (e.g. a transient vision-LLM API error)
+    instead of resubmitting approve()/skip(), which would reject the retry
+    as there being nothing currently pending."""
+    try:
+        return review.retry(session_id)
+    except KeyError:
+        raise HTTPException(404, "Unknown review session")
+    except RuntimeError as e:
+        raise HTTPException(503, str(e))
+    except Exception as e:
+        raise HTTPException(422, f"Failed to convert the next page: {e}")
+
+
+@app.post("/api/review/{session_id}/cancel")
+def review_cancel(session_id: str):
+    try:
+        return review.cancel(session_id)
+    except KeyError:
+        raise HTTPException(404, "Unknown review session")
 
 
 @app.get("/api/documents")

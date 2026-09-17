@@ -16,12 +16,16 @@ Every chunk is a dict: {"page_number", "markdown", "confidence", "needs_review"}
 import os
 import re
 import sys
+import tempfile
+
+import pymupdf as fitz
 
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 _PIPELINE_DIR = os.path.join(_REPO_ROOT, "pdf_to_docx_pipeline")
 if _PIPELINE_DIR not in sys.path:
     sys.path.insert(0, _PIPELINE_DIR)
 
+from pipeline import extract as pdf_extract  # noqa: E402
 from pipeline import ocr as pdf_ocr  # noqa: E402
 from pipeline.main import build_doc_items  # noqa: E402
 from pipeline.main_vision import build_doc_items_vision  # noqa: E402
@@ -139,13 +143,48 @@ def _chunk_plain_text(text: str, max_chars: int = PLAIN_TEXT_CHUNK_CHARS) -> lis
     ]
 
 
-def pdf_to_markdown(pdf_path: str, langs: str = None) -> list[dict]:
-    doc_items, _ = build_doc_items(pdf_path, langs=langs or pdf_ocr.DEFAULT_LANGS)
+def get_pdf_page_count(pdf_path: str) -> int:
+    doc = fitz.open(pdf_path)
+    try:
+        return doc.page_count
+    finally:
+        doc.close()
+
+
+def extract_single_page_pdf(pdf_path: str, page_index: int) -> str:
+    """Writes just `page_index` (0-indexed) of `pdf_path` out to a new temp
+    single-page PDF and returns its path - caller deletes it when done.
+    Lets the page-by-page review flow (backend/review.py) reuse the normal
+    whole-PDF conversion functions above against exactly one page, instead
+    of duplicating their OCR/extraction logic for a single-page case."""
+    src = fitz.open(pdf_path)
+    sub = fitz.open()
+    sub.insert_pdf(src, from_page=page_index, to_page=page_index)
+    fd, tmp_path = tempfile.mkstemp(suffix=".pdf")
+    os.close(fd)
+    sub.save(tmp_path)
+    sub.close()
+    src.close()
+    return tmp_path
+
+
+def render_page_preview(pdf_path: str, page_index: int, dpi: int = 150) -> bytes:
+    """Renders one page as PNG bytes for on-screen display in the review UI -
+    independent of, and lower-resolution than, whatever DPI the OCR engine
+    itself uses internally for scanned pages."""
+    return pdf_extract.render_page_for_ocr(pdf_path, page_index, dpi=dpi)
+
+
+def pdf_to_markdown(pdf_path: str, langs: str = None, progress=None) -> list[dict]:
+    """`progress`, if given, is called as progress(page_number, total_pages)
+    (0-indexed) as each page starts processing - see
+    pipeline.main.build_doc_items."""
+    doc_items, _ = build_doc_items(pdf_path, langs=langs or pdf_ocr.DEFAULT_LANGS, progress=progress)
     return items_to_chunks(doc_items)
 
 
 def pdf_to_markdown_vision(pdf_path: str, provider: str = None, model: str = None,
-                            api_key: str = None) -> list[dict]:
+                            api_key: str = None, progress=None) -> list[dict]:
     """Same as pdf_to_markdown, but scanned pages go through a vision-LLM
     (Claude or GPT-4o, see pipeline/vision_ocr.py) instead of local
     Tesseract - better at messy real-world scans and non-Latin scripts, at
@@ -154,8 +193,10 @@ def pdf_to_markdown_vision(pdf_path: str, provider: str = None, model: str = Non
     only) or via ANTHROPIC_API_KEY/OPENAI_API_KEY in the backend's
     environment. Confidence per chunk is the model's own self-reported
     estimate, not a calibrated metric like Tesseract's - treat it as a rough
-    signal."""
-    doc_items, _ = build_doc_items_vision(pdf_path, provider=provider, model=model, api_key=api_key)
+    signal. `progress`, if given, is called as progress(page_number,
+    total_pages) (0-indexed) as each page starts processing."""
+    doc_items, _ = build_doc_items_vision(
+        pdf_path, provider=provider, model=model, api_key=api_key, progress=progress)
     return items_to_chunks(doc_items)
 
 
@@ -174,19 +215,22 @@ def text_to_markdown(text_path: str) -> list[dict]:
 
 def convert_to_markdown(file_path: str, filename: str, engine: str = "classical",
                          provider: str = None, model: str = None,
-                         api_key: str = None) -> list[dict]:
+                         api_key: str = None, progress=None) -> list[dict]:
     """`engine`: "classical" (default, free, local Tesseract) or "vision"
     (per-page LLM call via `provider`/`model`/`api_key` - see
     pdf_to_markdown_vision). Only affects PDFs; other file types have
-    nothing to digitise. Returns a list of chunk dicts, each no bigger than
-    roughly one page."""
+    nothing to digitise. `progress`, if given, is called as
+    progress(page_number, total_pages) per PDF page (ignored for other file
+    types, which have no per-page OCR step to report on). Returns a list of
+    chunk dicts, each no bigger than roughly one page."""
     ext = os.path.splitext(filename)[1].lower()
     if ext == ".pdf":
         if engine == "vision":
-            return pdf_to_markdown_vision(file_path, provider=provider, model=model, api_key=api_key)
+            return pdf_to_markdown_vision(
+                file_path, provider=provider, model=model, api_key=api_key, progress=progress)
         if engine != "classical":
             raise ValueError(f"Unknown conversion engine {engine!r} - expected 'classical' or 'vision'")
-        return pdf_to_markdown(file_path)
+        return pdf_to_markdown(file_path, progress=progress)
     if ext == ".docx":
         return docx_to_markdown(file_path)
     if ext in (".txt", ".md"):

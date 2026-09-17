@@ -33,12 +33,18 @@ def _crop_png(color_img: np.ndarray, bbox_px: tuple) -> bytes:
 
 
 def build_doc_items_vision(pdf_path: str, provider: str = None, model: str = None,
-                            api_key: str = None, dpi: int = 200):
+                            api_key: str = None, dpi: int = 200, progress=None):
     """Runs the vision-LLM engine (stage 1 native extraction + stage 2 vision
     OCR for scanned pages) and returns the ordered content items plus run
     stats, without assembling a .docx - split out from run() so other
     consumers (e.g. a markdown converter) can reuse the same logic against a
-    different output format."""
+    different output format.
+
+    `progress`, if given, is called as progress(page_number, total_pages)
+    (0-indexed page_number) each time processing moves onto a new page - a
+    per-page LLM call can take real wall-clock time, so a caller with no
+    feedback until the whole document finishes looks hung."""
+    total_pages = fitz.open(pdf_path).page_count
     blocks = extract.extract_pdf(pdf_path)
 
     doc_items = []
@@ -50,6 +56,8 @@ def build_doc_items_vision(pdf_path: str, provider: str = None, model: str = Non
         if block.page_number != last_page:
             doc_items.append({"kind": "heading", "page": block.page_number})
             last_page = block.page_number
+            if progress:
+                progress(block.page_number, total_pages)
 
         if block.kind == "text":
             doc_items.append({"kind": "text", "lang": "unknown", "text": block.text, "confidence": 100.0})

@@ -243,3 +243,68 @@ mark {
   border-radius: 999px;
   opacity: 1;
 }
+
+.checkbox-label {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.9rem;
+  cursor: pointer;
+}
+
+.checkbox-label input[type="checkbox"] {
+  width: 1.1rem;
+  height: 1.1rem;
+}
+
+.hidden { display: none; }
+
+.review-panel {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 1rem;
+  margin-top: 1rem;
+}
+
+.review-header {
+  margin-bottom: 0.75rem;
+}
+
+.review-columns {
+  display: flex;
+  gap: 1rem;
+  flex-wrap: wrap;
+}
+
+.review-col {
+  flex: 1 1 320px;
+  min-width: 280px;
+}
+
+.review-col h3 {
+  margin: 0 0 0.4rem;
+  font-size: 0.85rem;
+  opacity: 0.75;
+  font-weight: 600;
+}
+
+#review-image {
+  width: 100%;
+  max-height: 65vh;
+  object-fit: contain;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: rgba(128, 128, 128, 0.08);
+}
+
+#review-markdown {
+  width: 100%;
+  height: 65vh;
+  resize: vertical;
+  font-family: ui-monospace, monospace;
+  font-size: 0.85rem;
+}
+
+#review-panel .row {
+  margin-top: 0.75rem;
+}

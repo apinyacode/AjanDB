@@ -93,7 +93,7 @@ def test_upload_vision_engine_succeeds_with_browser_supplied_key(tmp_path, monke
 
     captured = {}
 
-    def fake_pdf_to_markdown_vision(pdf_path, provider=None, model=None, api_key=None):
+    def fake_pdf_to_markdown_vision(pdf_path, provider=None, model=None, api_key=None, progress=None):
         captured["api_key"] = api_key
         return [{"page_number": 1, "markdown": "vision text", "confidence": 90.0, "needs_review": False}]
 
@@ -249,3 +249,122 @@ def test_chat_rejects_unknown_provider_with_400(tmp_path, monkeypatch):
         json={"instruction": "compile a book about raising a child", "provider": "bogus"},
     )
     assert resp.status_code == 400
+
+
+# --- Page-by-page review flow (/api/review/*) ---
+
+def _sample_pdf_bytes():
+    import make_test_pdf
+
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        path = make_test_pdf.build(f"{d}/sample.pdf")
+        with open(path, "rb") as f:
+            return f.read()
+
+
+def _start_review(client, **extra_data):
+    return client.post(
+        "/api/review/start",
+        files={"file": ("book.pdf", _sample_pdf_bytes(), "application/pdf")},
+        data={"langs": "eng+tha", **extra_data},
+    )
+
+
+def test_review_start_rejects_non_pdf(tmp_path, monkeypatch):
+    client = _client(tmp_path, monkeypatch)
+    resp = client.post(
+        "/api/review/start",
+        files={"file": ("note.txt", b"hello", "text/plain")},
+    )
+    assert resp.status_code == 400
+
+
+def test_review_start_returns_first_page_and_saves_nothing(tmp_path, monkeypatch):
+    client = _client(tmp_path, monkeypatch)
+    resp = _start_review(client)
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["total_pages"] == 3
+    assert body["page"]["page_number"] == 1
+    assert body["page"]["image_base64"]
+
+    assert client.get("/api/documents").json() == []
+    client.post(f"/api/review/{body['session_id']}/cancel")  # tidy up the open session/temp file
+
+
+def test_review_approve_saves_one_page_and_advances(tmp_path, monkeypatch):
+    client = _client(tmp_path, monkeypatch)
+    session_id = _start_review(client).json()["session_id"]
+
+    resp = client.post(f"/api/review/{session_id}/approve", json={})
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["done"] is False
+    assert body["page"]["page_number"] == 2
+    assert body["total_saved"] == 1
+
+    docs = client.get("/api/documents").json()
+    assert len(docs) == 1
+    assert docs[0]["page_number"] == 1
+    assert docs[0]["total_pages"] == 3
+
+
+def test_review_approve_with_edited_markdown_is_saved_verbatim(tmp_path, monkeypatch):
+    client = _client(tmp_path, monkeypatch)
+    session_id = _start_review(client).json()["session_id"]
+
+    client.post(f"/api/review/{session_id}/approve", json={"markdown": "edited by human", "needs_review": True})
+
+    docs = client.get("/api/documents").json()
+    doc = client.get(f"/api/documents/{docs[0]['id']}").json()
+    assert doc["markdown"] == "edited by human"
+    assert doc["needs_review"] == 1
+
+
+def test_review_skip_advances_without_saving(tmp_path, monkeypatch):
+    client = _client(tmp_path, monkeypatch)
+    session_id = _start_review(client).json()["session_id"]
+
+    resp = client.post(f"/api/review/{session_id}/skip")
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["page"]["page_number"] == 2
+    assert body["total_saved"] == 0
+    assert client.get("/api/documents").json() == []
+
+
+def test_review_full_flow_reaches_done_with_all_pages_saved(tmp_path, monkeypatch):
+    client = _client(tmp_path, monkeypatch)
+    session_id = _start_review(client).json()["session_id"]
+
+    client.post(f"/api/review/{session_id}/approve", json={})
+    client.post(f"/api/review/{session_id}/approve", json={})
+    resp = client.post(f"/api/review/{session_id}/approve", json={})
+
+    body = resp.json()
+    assert body["done"] is True
+    assert body["total_saved"] == 3
+    assert len(client.get("/api/documents").json()) == 3
+
+
+def test_review_cancel_ends_session_and_keeps_saved_pages(tmp_path, monkeypatch):
+    client = _client(tmp_path, monkeypatch)
+    session_id = _start_review(client).json()["session_id"]
+    client.post(f"/api/review/{session_id}/approve", json={})
+
+    resp = client.post(f"/api/review/{session_id}/cancel")
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["total_saved"] == 1
+    assert len(client.get("/api/documents").json()) == 1
+
+    # session is gone - a further approve on it 404s
+    assert client.post(f"/api/review/{session_id}/approve", json={}).status_code == 404
+
+
+def test_review_unknown_session_returns_404(tmp_path, monkeypatch):
+    client = _client(tmp_path, monkeypatch)
+    assert client.post("/api/review/not-a-real-session/approve", json={}).status_code == 404
+    assert client.post("/api/review/not-a-real-session/skip").status_code == 404
+    assert client.post("/api/review/not-a-real-session/cancel").status_code == 404
+    assert client.post("/api/review/not-a-real-session/retry").status_code == 404

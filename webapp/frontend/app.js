@@ -72,6 +72,8 @@ engineSelect.addEventListener("change", () => {
   uploadProviderSelect.disabled = engineSelect.value !== "vision";
 });
 
+const reviewModeCheckbox = document.getElementById("review-mode-checkbox");
+
 document.getElementById("upload-btn").addEventListener("click", async () => {
   const input = document.getElementById("file-input");
   const status = document.getElementById("upload-status");
@@ -80,6 +82,16 @@ document.getElementById("upload-btn").addEventListener("click", async () => {
 
   if (!input.files.length) {
     status.textContent = "Choose a file first.";
+    return;
+  }
+
+  if (reviewModeCheckbox.checked) {
+    const file = input.files[0];
+    if (!file.name.toLowerCase().endsWith(".pdf")) {
+      status.textContent = "Review mode only supports PDF files.";
+      return;
+    }
+    await startReview(file);
     return;
   }
 
@@ -151,6 +163,128 @@ function renderChunks(container, chunks) {
     container.appendChild(card);
   });
 }
+
+// --- Page-by-page review mode: convert one page at a time, show the scan
+// next to the editable converted text, and save only on explicit approval. ---
+const reviewPanel = document.getElementById("review-panel");
+const reviewProgress = document.getElementById("review-progress");
+const reviewBadges = document.getElementById("review-badges");
+const reviewImage = document.getElementById("review-image");
+const reviewMarkdown = document.getElementById("review-markdown");
+const reviewApproveBtn = document.getElementById("review-approve-btn");
+const reviewSkipBtn = document.getElementById("review-skip-btn");
+const reviewRetryBtn = document.getElementById("review-retry-btn");
+const reviewCancelBtn = document.getElementById("review-cancel-btn");
+const reviewStatus = document.getElementById("review-status");
+
+let reviewSessionId = null;
+let reviewTotalPages = 0;
+
+function setReviewControlsEnabled(enabled) {
+  document.getElementById("file-input").disabled = !enabled;
+  document.getElementById("upload-btn").disabled = !enabled;
+  reviewModeCheckbox.disabled = !enabled;
+}
+
+async function startReview(file) {
+  const status = document.getElementById("upload-status");
+  const categoryInput = document.getElementById("category-input");
+  const engine = engineSelect.value;
+  const formData = new FormData();
+  formData.append("file", file);
+  formData.append("engine", engine);
+  if (engine === "vision") formData.append("provider", uploadProviderSelect.value);
+  if (categoryInput.value.trim()) formData.append("category", categoryInput.value.trim());
+  const keys = currentApiKeys();
+  if (keys.anthropic_api_key) formData.append("anthropic_api_key", keys.anthropic_api_key);
+  if (keys.openai_api_key) formData.append("openai_api_key", keys.openai_api_key);
+
+  status.textContent = "Converting page 1…";
+  setReviewControlsEnabled(false);
+  try {
+    const res = await fetch("/api/review/start", { method: "POST", body: formData });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || "Failed to start review");
+    reviewSessionId = data.session_id;
+    reviewTotalPages = data.total_pages;
+    status.textContent = "";
+    document.getElementById("upload-chunks").innerHTML = "";
+    showReviewPage(data.page);
+  } catch (err) {
+    status.textContent = `Error: ${err.message}`;
+    setReviewControlsEnabled(true);
+  }
+}
+
+function showReviewPage(page) {
+  reviewPanel.classList.remove("hidden");
+  reviewRetryBtn.classList.add("hidden");
+  reviewApproveBtn.disabled = false;
+  reviewSkipBtn.disabled = false;
+  reviewProgress.textContent = `Page ${page.page_number} of ${reviewTotalPages}`;
+  const confidenceText = page.confidence === null || page.confidence === undefined
+    ? "n/a" : `${page.confidence}%`;
+  reviewBadges.innerHTML =
+    `Confidence: ${confidenceText}` +
+    (page.needs_review ? ` <span class="badge">Needs review</span>` : "");
+  reviewImage.src = `data:image/png;base64,${page.image_base64}`;
+  reviewMarkdown.value = page.markdown;
+  reviewStatus.textContent = "";
+}
+
+function endReviewSession(message) {
+  reviewPanel.classList.add("hidden");
+  reviewSessionId = null;
+  setReviewControlsEnabled(true);
+  document.getElementById("upload-status").textContent = message;
+}
+
+async function reviewAction(path, body) {
+  reviewApproveBtn.disabled = true;
+  reviewSkipBtn.disabled = true;
+  reviewRetryBtn.classList.add("hidden");
+  reviewStatus.textContent = "Converting next page…";
+  try {
+    const res = await fetch(`/api/review/${reviewSessionId}/${path}`, {
+      method: "POST",
+      headers: body ? { "Content-Type": "application/json" } : undefined,
+      body: body ? JSON.stringify(body) : undefined,
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || "Request failed");
+    if (data.done) {
+      endReviewSession(
+        `Review complete: ${data.total_saved} page(s) saved, category "${escapeHtml(data.category)}".`);
+    } else {
+      showReviewPage(data.page);
+    }
+  } catch (err) {
+    reviewStatus.textContent = `Error: ${err.message}`;
+    reviewRetryBtn.classList.remove("hidden");
+    reviewApproveBtn.disabled = true;
+    reviewSkipBtn.disabled = true;
+  }
+}
+
+reviewApproveBtn.addEventListener("click", () => {
+  reviewAction("approve", { markdown: reviewMarkdown.value });
+});
+reviewSkipBtn.addEventListener("click", () => {
+  reviewAction("skip", null);
+});
+reviewRetryBtn.addEventListener("click", () => {
+  reviewAction("retry", null);
+});
+reviewCancelBtn.addEventListener("click", async () => {
+  if (!reviewSessionId) return;
+  try {
+    const res = await fetch(`/api/review/${reviewSessionId}/cancel`, { method: "POST" });
+    const data = await res.json();
+    endReviewSession(`Review cancelled: ${data.total_saved} page(s) already saved.`);
+  } catch (err) {
+    endReviewSession(`Review cancelled (with an error checking final state: ${err.message}).`);
+  }
+});
 
 document.getElementById("search-btn").addEventListener("click", runSearch);
 document.getElementById("search-input").addEventListener("keydown", (e) => {

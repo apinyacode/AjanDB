@@ -25,12 +25,18 @@ from . import extract, ocr, handwriting, assemble
 
 
 def build_doc_items(pdf_path: str, langs: str = ocr.DEFAULT_LANGS,
-                     handwriting_threshold: float = 0.85):
+                     handwriting_threshold: float = 0.85, progress=None):
     """Runs stages 1-3 (extraction, OCR, handwriting detection) and returns
     the ordered content items plus run stats, without assembling a .docx -
     split out from run() so other consumers (e.g. a markdown converter) can
     reuse the same extraction/classification logic against a different
-    output format."""
+    output format.
+
+    `progress`, if given, is called as progress(page_number, total_pages)
+    (0-indexed page_number) each time processing moves onto a new page -
+    OCR can take long enough per page that a caller with no feedback until
+    the whole document finishes looks hung."""
+    total_pages = fitz.open(pdf_path).page_count
     blocks = extract.extract_pdf(pdf_path)
 
     doc_items = []
@@ -43,6 +49,8 @@ def build_doc_items(pdf_path: str, langs: str = ocr.DEFAULT_LANGS,
         if block.page_number != last_page:
             doc_items.append({"kind": "heading", "page": block.page_number})
             last_page = block.page_number
+            if progress:
+                progress(block.page_number, total_pages)
 
         if block.kind == "text":
             lang = ocr.tag_language(block.text)

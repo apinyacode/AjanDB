@@ -47,3 +47,12 @@ def test_run_never_ocrs_born_digital_pages(sample_pdf_path, tmp_path, monkeypatc
     main.run(sample_pdf_path, str(out), langs="eng+tha")
 
     assert calls == [1]  # only the scanned page (index 1) was rasterized
+
+
+def test_build_doc_items_calls_progress_once_per_page(sample_pdf_path):
+    from pipeline.main import build_doc_items
+
+    seen = []
+    build_doc_items(sample_pdf_path, langs="eng+tha", progress=lambda p, t: seen.append((p, t)))
+
+    assert seen == [(0, 3), (1, 3), (2, 3)]
