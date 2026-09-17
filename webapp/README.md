@@ -27,25 +27,46 @@ as searchable markdown, and compiling a book from whatever matches a topic.
   searches the store for matching chunks and asks Claude or GPT (your choice,
   per request) to synthesise them into one coherent book in markdown.
 
-## Setup
+## Deploy / redeploy (one command)
+
+```bash
+bash webapp/deploy.sh
+```
+
+Installs any missing system dependencies (git, Tesseract + language packs,
+ffmpeg), creates the venv on first run, installs/updates Python packages,
+pulls the latest code (skipped automatically if you have uncommitted local
+changes - it never discards work), restarts the server, and opens a public
+`cloudflared` tunnel. Safe to re-run any time; every step is idempotent.
+Ctrl+C stops both the tunnel and the server.
+
+Use `bash webapp/deploy.sh --no-pull` to redeploy what's already on disk
+without touching git (useful right after editing something locally).
+
+Drop a `webapp/.env` (copy `webapp/.env.example`) with your API key(s) if you
+don't want to use the in-page "API Keys" panel or re-export them every time:
+```bash
+cp webapp/.env.example webapp/.env
+# then edit webapp/.env
+```
+
+<details>
+<summary>Manual setup (what deploy.sh does, if you want to run it by hand)</summary>
 
 ```bash
 cd webapp
 python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements-dev.txt
+uvicorn backend.main:app --reload --app-dir .
 ```
 
 PDF uploads need the same system dependencies as `pdf_to_docx_pipeline`
 (Tesseract + language packs, Noto fonts) - see that directory's README.
+</details>
 
-## Run
-
-```bash
-uvicorn backend.main:app --reload --app-dir .
-```
-
-Then open http://127.0.0.1:8000/ - the backend serves the frontend directly,
-so there's nothing separate to run for the UI.
+Then open http://127.0.0.1:8000/ (or the `cloudflared` URL `deploy.sh`
+prints) - the backend serves the frontend directly, so there's nothing
+separate to run for the UI.
 
 The "Data Generation" tab, and the Vision-LLM upload engine, need an API key
 - pick whichever provider you actually have (neither is the same thing as a

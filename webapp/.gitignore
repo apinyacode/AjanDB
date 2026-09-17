@@ -3,3 +3,6 @@ __pycache__/
 *.pyc
 .pytest_cache/
 data/*.sqlite3
+.env
+cloudflared
+*.log
