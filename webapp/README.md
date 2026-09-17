@@ -35,18 +35,47 @@ as searchable markdown, and compiling a book from whatever matches a topic.
 ## Deploy / redeploy (one command)
 
 ```bash
-bash webapp/deploy.sh
+bash webapp/deploy.sh          # local target (default) - the fully-supported path
+bash webapp/deploy.sh vercel   # vercel target - read the limitations below first
 ```
 
-Installs any missing system dependencies (git, Tesseract + language packs,
-ffmpeg), creates the venv on first run, installs/updates Python packages,
-pulls the latest code (skipped automatically if you have uncommitted local
-changes - it never discards work), restarts the server, and opens a public
-`cloudflared` tunnel. Safe to re-run any time; every step is idempotent.
-Ctrl+C stops both the tunnel and the server.
+**`local` (default)** - installs any missing system dependencies (git,
+Tesseract + language packs, ffmpeg), creates the venv on first run,
+installs/updates Python packages, pulls the latest code (skipped
+automatically if you have uncommitted local changes - it never discards
+work), restarts the server, and opens a public `cloudflared` tunnel. Safe
+to re-run any time; every step is idempotent. Ctrl+C stops both the tunnel
+and the server. Everything (uploads, both OCR engines, search, compile)
+works exactly as developed on this path.
 
-Use `bash webapp/deploy.sh --no-pull` to redeploy what's already on disk
-without touching git (useful right after editing something locally).
+Use `bash webapp/deploy.sh --no-pull` (either target) to redeploy what's
+already on disk without touching git (useful right after editing something
+locally).
+
+**`vercel`** - runs `vercel deploy` (installs the `vercel` CLI yourself
+first: `npm install -g vercel`) after printing a confirmation prompt, since
+this app doesn't actually work correctly there yet:
+
+- **SQLite storage doesn't persist.** Vercel serverless functions have an
+  ephemeral, per-invocation filesystem - an upload written by one request
+  is gone by the next. There's no real library on Vercel with this
+  codebase as-is.
+- **The classical OCR engine can't run.** It shells out to the `tesseract`
+  binary, which isn't in Vercel's Python runtime and can't be apt-installed
+  there. Only the vision-LLM engine (Claude/GPT-4o via API key) could work.
+- **Background upload jobs don't survive.** `/api/upload` hands OCR to a
+  background thread and returns immediately (see "Data Store" above); a
+  serverless function has nothing running once it returns a response, and
+  real OCR would usually exceed Vercel's function timeout anyway.
+
+In short: `vercel` is good for a quick look at the UI, not for real
+uploads/search/library use - use `local` for that. Turning this into a
+real serverless deployment would mean swapping SQLite for a hosted
+database and reworking the upload-job/OCR-engine story around Vercel's
+constraints; that's a bigger change than this script and hasn't been done.
+Pass `--yes` to skip the confirmation prompt (scripted use) and `--prod`
+to pass `--prod` through to `vercel deploy`. If `webapp/vercel.json`
+doesn't exist yet, a minimal one is created for you.
 
 Drop a `webapp/.env` (copy `webapp/.env.example`) with your API key(s) if you
 don't want to use the in-page "API Keys" panel or re-export them every time:

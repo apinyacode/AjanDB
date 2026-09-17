@@ -1,7 +1,17 @@
 import sys
 
+import pytest
+
 from backend import db
 from scripts import chunked_upload
+
+
+@pytest.fixture(autouse=True)
+def _isolate_state_dir(tmp_path, monkeypatch):
+    # chunked_upload.STATE_DIR defaults to a real path under webapp/data/ -
+    # tests must never touch that directory, so every test gets its own
+    # tmp_path-scoped state dir instead.
+    monkeypatch.setattr(chunked_upload, "STATE_DIR", str(tmp_path / "chunked_upload_state"))
 
 
 def _make_pdf(tmp_path, name="sample.pdf"):
