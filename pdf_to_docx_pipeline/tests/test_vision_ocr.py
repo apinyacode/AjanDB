@@ -167,3 +167,43 @@ def test_extract_page_with_vision_rejects_unknown_provider():
         assert False, "expected ValueError"
     except ValueError as e:
         assert "bogus" in str(e)
+
+
+def test_extract_page_with_vision_repairs_stray_backslash_in_transcribed_text(monkeypatch):
+    # A real failure mode: the model transcribes text containing a literal
+    # backslash (e.g. "C:\Users\..." or a fraction written "1\2") without
+    # doubling it for JSON - raw json.loads rejects this outright with
+    # "Invalid \escape", even though a human reader knows exactly what was
+    # meant. This is deliberately *not* valid JSON (constructed by hand,
+    # not via json.dumps) to reproduce that exact failure.
+    broken = '{"blocks": [{"type": "text", "language": "en", ' \
+             '"text": "see C:\\Users\\notes", "bbox": [0.1, 0.1, 0.5, 0.2]}]}'
+    monkeypatch.setattr(
+        vision_ocr, "Anthropic",
+        lambda api_key=None: _FakeAnthropic(broken),
+    )
+    blocks = vision_ocr.extract_page_with_vision(_tiny_png_bytes(), api_key="fake")
+    assert len(blocks) == 1
+    assert "C:" in blocks[0]["text"] and "Users" in blocks[0]["text"]
+
+
+def test_extract_page_with_vision_raises_clear_error_on_unparseable_response(monkeypatch):
+    monkeypatch.setattr(
+        vision_ocr, "Anthropic",
+        lambda api_key=None: _FakeAnthropic("This is not JSON at all."),
+    )
+    try:
+        vision_ocr.extract_page_with_vision(_tiny_png_bytes(), api_key="fake")
+        assert False, "expected ValueError"
+    except ValueError as e:
+        assert "wasn't valid JSON" in str(e)
+        assert "This is not JSON" in str(e)
+
+
+def test_repair_invalid_escapes_leaves_valid_escapes_untouched():
+    text = r'{"a": "line1\nline2", "b": "quote\"here", "c": "bad\stray"}'
+    repaired = vision_ocr._repair_invalid_escapes(text)
+    assert '\\n' in repaired
+    assert '\\"' in repaired
+    assert '\\\\stray' in repaired
+    json.loads(repaired)  # doesn't raise

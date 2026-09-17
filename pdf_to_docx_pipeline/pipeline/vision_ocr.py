@@ -87,6 +87,39 @@ def _strip_code_fences(text: str) -> str:
     return text
 
 
+# JSON escape characters that json.loads accepts after a backslash - anything
+# else is a decode error, e.g. json.decoder.JSONDecodeError: Invalid \escape.
+_VALID_JSON_ESCAPE_CHARS = '"\\/bfnrtu'
+_INVALID_ESCAPE_RE = re.compile(r'\\(?![' + re.escape(_VALID_JSON_ESCAPE_CHARS) + '])')
+
+
+def _repair_invalid_escapes(text: str) -> str:
+    """Vision-LLM responses occasionally contain a literal backslash that
+    isn't part of a valid JSON escape sequence - most often inside
+    transcribed text that itself contains one (a fraction, a file path, a
+    stray OCR artifact), which json.loads rejects outright rather than
+    treating as a literal character the way a human reader would. Doubles
+    any such backslash so it parses as a literal '\\', without touching
+    already-valid escapes like \\n or \\"."""
+    return _INVALID_ESCAPE_RE.sub(r"\\\\", text)
+
+
+def _parse_model_json(raw: str) -> dict:
+    cleaned = _strip_code_fences(raw)
+    try:
+        return json.loads(cleaned)
+    except json.JSONDecodeError:
+        pass
+    try:
+        return json.loads(_repair_invalid_escapes(cleaned))
+    except json.JSONDecodeError as e:
+        snippet = cleaned if len(cleaned) <= 300 else cleaned[:300] + "..."
+        raise ValueError(
+            f"Vision-LLM response wasn't valid JSON even after escape repair ({e}). "
+            f"Response started with: {snippet!r}"
+        ) from e
+
+
 _API_KEY_ENV_VAR = {"anthropic": "ANTHROPIC_API_KEY", "openai": "OPENAI_API_KEY"}
 _PROVIDER_DISPLAY_NAME = {"anthropic": "Anthropic", "openai": "OpenAI"}
 
@@ -154,7 +187,7 @@ def extract_page_with_vision(png_bytes: bytes, model: str = None, api_key: str =
         )
 
     raw = _CALLERS[provider](png_bytes, model, resolved_key)
-    parsed = json.loads(_strip_code_fences(raw))
+    parsed = _parse_model_json(raw)
 
     # need real pixel dimensions to convert the model's normalized bboxes
     from PIL import Image
