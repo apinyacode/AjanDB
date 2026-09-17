@@ -106,12 +106,66 @@ the server-side default provider when the frontend doesn't specify one.
 python3 -m pytest tests/ -v
 ```
 
-88 tests total (37 in the pipeline, 51 here) covering the SQLite/FTS5 layer
+96 tests total (37 in the pipeline, 59 here) covering the SQLite/FTS5 layer
 (including confidence/needs_review/category columns), chunking (per-page for
 PDFs, character-budget for plain text), category suggestion (mocked model
 calls, graceful no-key fallback), the book compiler's retrieval + error
 handling for both providers, browser-supplied key resolution/priority, the
-background upload-job lifecycle, and the FastAPI endpoints via `TestClient`.
+background upload-job lifecycle, the FastAPI endpoints via `TestClient`, and
+the standalone chunked-upload script below.
+
+## Digitising a whole book without the web upload (`scripts/chunked_upload.py`)
+
+For a large scanned book, there's a second way in besides the browser's
+Data Store tab:
+
+```bash
+cd webapp
+python3 scripts/chunked_upload.py /path/to/book.pdf
+```
+
+This bypasses the web server and `/api/upload` entirely. It opens the PDF
+directly, splits it into page-range batches (5 pages by default), converts
+each batch with the same `backend/convert.py` pipeline the web app uses, and
+inserts the resulting chunks straight into `data/ajandb.sqlite3` as soon as
+each batch finishes - so pages already processed show up in search
+immediately, even while later pages are still converting. No HTTP upload of
+the source file, and no tunnel connection needs to survive the OCR run at
+all, since none of the work happens over HTTP.
+
+If it's interrupted partway through a long book (closed terminal, crashed
+process, killed to free up the machine), re-run with `--resume` and it skips
+every page range it already finished, picking up where it left off instead
+of reprocessing the whole book:
+
+```bash
+python3 scripts/chunked_upload.py /path/to/book.pdf --resume
+```
+
+Useful options (see `--help` for the full list):
+
+- `--chunk-size N` - pages per batch (default 5; smaller batches mean more
+  frequent progress/resume points, larger batches mean fewer temp files).
+- `--engine vision --provider anthropic|openai --api-key ...` - use the
+  vision-LLM engine instead of local Tesseract, same tradeoffs as the web
+  upload's engine picker (needs an API key; better on messy scans, costs
+  tokens). Without `--api-key`, falls back to `ANTHROPIC_API_KEY`/
+  `OPENAI_API_KEY` in the environment.
+- `--category "My Book"` - skip auto-suggestion and use this category for
+  every chunk. Left unset, it auto-suggests once (same as the web upload)
+  and reuses that category on every later batch - including a `--resume`
+  run, which looks up whatever category the file's earlier chunks already
+  got instead of re-suggesting from a different page range.
+- `--stop-on-error` - abort on the first batch that fails to convert,
+  instead of the default (log it, keep going, report all failures at the
+  end so one bad page range doesn't lose the rest of the book).
+
+Progress state lives in `data/chunked_upload_state/` (gitignored), one JSON
+file per input PDF. Without `--resume`, a re-run reprocesses and re-inserts
+every page from scratch - it doesn't delete anything first, so running it
+twice on the same book without `--resume` leaves duplicate chunks; use
+`--resume`, or clear out that book's rows via `/api/documents` first, if
+that's not what you want.
 
 ## Data storage
 

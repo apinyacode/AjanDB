@@ -74,12 +74,19 @@ def init_db(conn: sqlite3.Connection):
 
 
 def insert_chunks(conn: sqlite3.Connection, source_filename: str, source_type: str,
-                   category: str, chunks: list[dict]) -> list[int]:
+                   category: str, chunks: list[dict], total_pages: int | None = None) -> list[int]:
     """`chunks`: [{"page_number", "markdown", "confidence", "needs_review"}, ...]
     (see backend/convert.py). All chunks from one upload share source_filename,
-    source_type, category and uploaded_at; total_pages is len(chunks)."""
+    source_type, category and uploaded_at.
+
+    `total_pages` defaults to len(chunks) (the normal single-upload case).
+    Pass it explicitly when inserting a source file's chunks in more than one
+    batch - e.g. scripts/chunked_upload.py processing a large book a few
+    pages at a time - so every batch reports the true total instead of just
+    its own slice's size."""
     uploaded_at = datetime.now(timezone.utc).isoformat()
-    total_pages = len(chunks)
+    if total_pages is None:
+        total_pages = len(chunks)
     ids = []
     for chunk in chunks:
         cur = conn.execute(
