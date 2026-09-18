@@ -21,11 +21,22 @@ rest of this repo's approach to code that needs a key this environment
 doesn't have.
 """
 import os
+import re
 
 from anthropic import Anthropic
 from openai import OpenAI
 
 from . import db as db_module
+
+# Embedded images (see convert.py) are base64 data URIs that can run to tens
+# of KB of characters meaningless to an LLM - left in, one image could eat
+# the entire max_chars_per_source budget for a source and crowd out the
+# actual text. Swapped for a short bracketed label before anything is sent.
+_IMAGE_MARKDOWN_RE = re.compile(r"!\[([^\]]*)\]\(data:image/[^)]*\)")
+
+
+def _strip_embedded_images(markdown: str) -> str:
+    return _IMAGE_MARKDOWN_RE.sub(lambda m: f"[{m.group(1) or 'image'}]", markdown)
 
 DEFAULT_PROVIDER = "anthropic"
 
@@ -142,7 +153,7 @@ def compile_book(instruction: str, conn, provider: str = None, model: str = None
     source_labels = []
     for m in matches:
         full = db_module.get_document(conn, m["id"])
-        content = full["markdown"][:max_chars_per_source]
+        content = _strip_embedded_images(full["markdown"])[:max_chars_per_source]
         label = f"{full['source_filename']} (page {full['page_number']}/{full['total_pages']})"
         source_labels.append(label)
         source_blocks.append(f"--- SOURCE: {label} ---\n{content}")

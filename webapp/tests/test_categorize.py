@@ -83,6 +83,25 @@ def test_suggest_category_calls_openai_when_provider_selected(monkeypatch):
     assert label == "Recipes"
 
 
+def test_suggest_category_strips_embedded_images_from_the_excerpt(monkeypatch):
+    captured = {}
+
+    def _capturing_create(self, **kwargs):
+        captured["prompt"] = kwargs["messages"][0]["content"]
+        return SimpleNamespace(content=[_FakeTextBlock("Field Notes")])
+
+    monkeypatch.setattr(_FakeMessages, "create", _capturing_create)
+    monkeypatch.setattr(categorize, "Anthropic", lambda api_key=None: _FakeAnthropic(""))
+
+    huge_fake_base64 = "A" * 5000
+    text = f"A field report about crops.\n\n![image](data:image/png;base64,{huge_fake_base64})"
+    label = categorize.suggest_category(text, api_key="fake")
+
+    assert label == "Field Notes"
+    assert huge_fake_base64 not in captured["prompt"]
+    assert "A field report about crops" in captured["prompt"]
+
+
 def test_suggest_category_returns_none_when_model_call_raises(monkeypatch):
     class _BoomAnthropic:
         def __init__(self, api_key=None):

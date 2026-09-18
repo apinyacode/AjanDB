@@ -196,6 +196,15 @@ input[type="password"] {
   overflow-y: auto;
 }
 
+.embedded-page-image {
+  display: block;
+  max-width: 100%;
+  max-height: 40vh;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  margin: 0.5rem 0;
+}
+
 .console {
   white-space: pre-wrap;
   word-break: break-word;
@@ -331,6 +340,21 @@ mark {
   font-weight: 600;
 }
 
+.review-col-header {
+  justify-content: space-between;
+  align-items: baseline;
+  margin: 0 0 0.4rem;
+}
+
+.review-col-header h3 {
+  margin: 0;
+}
+
+.review-col-header button {
+  padding: 0.25rem 0.6rem;
+  font-size: 0.8rem;
+}
+
 #review-image {
   width: 100%;
   max-height: 65vh;
@@ -379,9 +403,16 @@ mark {
 }
 
 .markdown-highlight mark {
-  background: #ffb300;
   color: transparent;
   border-radius: 2px;
+}
+
+.markdown-highlight mark.flagged {
+  background: #ffb300;
+}
+
+.markdown-highlight mark.speaking {
+  background: #4da3ff;
 }
 
 #review-markdown {

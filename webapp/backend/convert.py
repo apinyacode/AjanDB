@@ -16,7 +16,17 @@ text, no OCR involved). `flagged_snippets` is the list of exact substrings
 within `markdown` that dragged `confidence` below 100 (or represent content
 that wasn't transcribed at all) - the review UI highlights them so a human
 knows exactly what to double-check instead of re-reading the whole page.
-Always [] for plain text/markdown/.docx, which have nothing to guess."""
+Always [] for plain text/markdown/.docx, which have nothing to guess.
+
+Images, handwriting, and low-confidence OCR regions are never sent through
+text extraction - they're embedded directly in the markdown as
+`![alt](data:image/...;base64,...)`, in reading order, so the actual
+picture is right there to look at instead of a "see the original document"
+placeholder note. This does mean a page with several images can make its
+markdown (and therefore its row in the database) noticeably large - fine
+for a personal library, worth knowing if you're digitising something
+photo-heavy."""
+import base64
 import os
 import re
 import sys
@@ -58,45 +68,43 @@ def _clean(text: str) -> str:
     return _CONTROL_CHARS_RE.sub("", text)
 
 
-_SUMMARY_LABELS = {
-    "image": "image(s)",
-    "handwriting": "handwritten/low-confidence region(s)",
-    "uncertain": "low-confidence OCR region(s)",
+_IMAGE_ALT_TEXT = {
+    "image": "image",
+    "handwriting": "handwriting",
+    "uncertain": "low-confidence region",
+}
+_IMAGE_MIME_TYPES = {
+    "png": "image/png", "jpg": "image/jpeg", "jpeg": "image/jpeg",
+    "gif": "image/gif", "bmp": "image/bmp", "tiff": "image/tiff", "webp": "image/webp",
 }
 _FLAGGED_KINDS = ("image", "handwriting", "uncertain")
 # Of the flagged kinds, only these represent content that genuinely couldn't
 # be transcribed reliably - a plain photo isn't itself a review-worthy
-# accuracy problem, so it's reported in the summary but doesn't flag the page.
+# accuracy problem or worth flagging for extra scrutiny, just worth showing.
 _REVIEW_TRIGGER_KINDS = ("handwriting", "uncertain")
 
 
+def _image_to_data_uri(image_bytes: bytes, ext: str = "png") -> str:
+    mime = _IMAGE_MIME_TYPES.get((ext or "png").lower().lstrip("."), "image/png")
+    return f"data:{mime};base64,{base64.b64encode(image_bytes).decode('ascii')}"
+
+
 def items_to_chunks(doc_items: list[dict]) -> list[dict]:
-    """Turns one PDF's ordered content items into one chunk per page. Non-text
-    items (images, handwriting, low-confidence regions) aren't inlined - a
-    scanned page in a script with heavy diacritics (Thai, Vietnamese, ...)
-    can produce dozens of tiny mis-split OCR fragments that the handwriting
-    heuristic flags individually (see pipeline/handwriting.py's docstring),
-    so these are counted and rolled into one summary line per page instead
-    of a placeholder per item."""
+    """Turns one PDF's ordered content items into one chunk per page. Images,
+    handwriting, and low-confidence OCR regions are embedded as real images
+    (see module docstring) rather than transcribed or merely counted, each
+    in its original reading-order position."""
     chunks = []
-    state = {"page": None, "lines": [], "confidences": [], "flagged_lines": [],
+    state = {"page": None, "lines": [], "confidences": [], "flagged_snippets": [],
              "counts": {k: 0 for k in _FLAGGED_KINDS}}
 
     def flush():
         if state["page"] is None:
             return
-        counts = state["counts"]
-        summary_parts = [f"{counts[k]} {_SUMMARY_LABELS[k]}" for k in _FLAGGED_KINDS if counts[k]]
-        lines = list(state["lines"])
-        flagged_snippets = list(state["flagged_lines"])
-        if summary_parts:
-            summary_line = "*[Not shown as text: " + ", ".join(summary_parts) + " - see the original document]*"
-            lines.append(summary_line)
-            flagged_snippets.append(summary_line)
-        markdown = "\n\n".join(lines).strip() or "*[No extractable text on this page]*"
-
+        markdown = "\n\n".join(state["lines"]).strip() or "*[No extractable text on this page]*"
         confidences = state["confidences"]
         avg_confidence = round(sum(confidences) / len(confidences), 1) if confidences else None
+        counts = state["counts"]
         needs_review = (
             any(counts[k] for k in _REVIEW_TRIGGER_KINDS)
             or (avg_confidence is not None and avg_confidence < CONFIDENCE_REVIEW_THRESHOLD)
@@ -106,14 +114,14 @@ def items_to_chunks(doc_items: list[dict]) -> list[dict]:
             "markdown": markdown,
             "confidence": avg_confidence,
             "needs_review": needs_review,
-            "flagged_snippets": flagged_snippets,
+            "flagged_snippets": list(state["flagged_snippets"]),
         })
 
     for item in doc_items:
         kind = item["kind"]
         if kind == "heading":
             flush()
-            state = {"page": item["page"], "lines": [], "confidences": [], "flagged_lines": [],
+            state = {"page": item["page"], "lines": [], "confidences": [], "flagged_snippets": [],
                       "counts": {k: 0 for k in _FLAGGED_KINDS}}
         elif kind == "text":
             text = _clean(item["text"]).strip()
@@ -125,11 +133,18 @@ def items_to_chunks(doc_items: list[dict]) -> list[dict]:
                 # always tagged 100 - see pipeline/main.py's build_doc_items)
                 # - exactly the text worth a human double-checking first.
                 if confidence is not None and confidence < 100:
-                    state["flagged_lines"].append(text)
+                    state["flagged_snippets"].append(text)
             if confidence is not None:
                 state["confidences"].append(confidence)
-        elif kind in state["counts"]:
+        elif kind in _FLAGGED_KINDS:
             state["counts"][kind] += 1
+            image_bytes = item.get("image_bytes")
+            if image_bytes:
+                data_uri = _image_to_data_uri(image_bytes, item.get("image_ext", "png"))
+                image_line = f"![{_IMAGE_ALT_TEXT[kind]}]({data_uri})"
+                state["lines"].append(image_line)
+                if kind in _REVIEW_TRIGGER_KINDS:
+                    state["flagged_snippets"].append(image_line)
     flush()
     return chunks
 

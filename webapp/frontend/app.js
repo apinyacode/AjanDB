@@ -164,30 +164,57 @@ function renderConsole(lines) {
   el.scrollTop = el.scrollHeight;
 }
 
-// Renders `text` as HTML with every occurrence of any `flaggedSnippets`
-// entry wrapped in <mark> - shared between the read-only chunk-card preview
-// below and the review-mode editable-textarea overlay further down. Longest
-// snippets are matched first so one snippet that happens to contain a
-// shorter one (e.g. a paragraph containing an already-flagged sentence)
-// doesn't get split into a smaller, misleading highlight.
-function renderHighlightedMarkdown(text, flaggedSnippets) {
-  if (!flaggedSnippets || !flaggedSnippets.length) return escapeHtml(text);
-  const escapedForRegex = flaggedSnippets
-    .filter((s) => s)
+// Renders `text` as HTML with every occurrence of any snippet in `groups`
+// wrapped in <mark> - shared between the read-only chunk-card preview below
+// and the review-mode editable-textarea overlay further down. `groups` is
+// an array of {snippets, className} so more than one kind of highlight (a
+// low-confidence flag, a "currently being read aloud" segment) can render
+// at once with different colours. Longest snippets are matched first so
+// one snippet that happens to contain a shorter one (e.g. a paragraph
+// containing an already-flagged sentence) doesn't get split into a
+// smaller, misleading highlight.
+function renderHighlightedMarkdown(text, groups) {
+  const classByText = new Map();
+  (groups || []).forEach((g) => {
+    (g.snippets || []).filter(Boolean).forEach((s) => {
+      if (!classByText.has(s)) classByText.set(s, g.className || "");
+    });
+  });
+  if (!classByText.size) return escapeHtml(text);
+
+  const escapedForRegex = Array.from(classByText.keys())
     .sort((a, b) => b.length - a.length)
     .map((s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
-  if (!escapedForRegex.length) return escapeHtml(text);
-
   const re = new RegExp(escapedForRegex.join("|"), "g");
   let html = "";
   let lastIndex = 0;
   let match;
   while ((match = re.exec(text)) !== null) {
     html += escapeHtml(text.slice(lastIndex, match.index));
-    html += `<mark>${escapeHtml(match[0])}</mark>`;
+    const cls = classByText.get(match[0]) || "";
+    html += `<mark${cls ? ` class="${cls}"` : ""}>${escapeHtml(match[0])}</mark>`;
     lastIndex = match.index + match[0].length;
   }
   html += escapeHtml(text.slice(lastIndex));
+  return html;
+}
+
+// Same as renderHighlightedMarkdown, but also renders embedded
+// ![alt](data:image/...) syntax (see convert.py) as an actual <img> instead
+// of raw markdown text - only safe for read-only display, since it changes
+// the rendered layout and would break the review-mode overlay's need to
+// mirror the textarea's text exactly (see updateReviewHighlight).
+function renderMarkdownWithImages(text, groups) {
+  const re = /!\[([^\]]*)\]\((data:image\/[a-zA-Z0-9.+-]+;base64,[A-Za-z0-9+/=]+)\)/g;
+  let html = "";
+  let lastIndex = 0;
+  let match;
+  while ((match = re.exec(text)) !== null) {
+    html += renderHighlightedMarkdown(text.slice(lastIndex, match.index), groups);
+    html += `<img class="embedded-page-image" alt="${escapeHtml(match[1])}" src="${match[2]}">`;
+    lastIndex = match.index + match[0].length;
+  }
+  html += renderHighlightedMarkdown(text.slice(lastIndex), groups);
   return html;
 }
 
@@ -198,13 +225,14 @@ function renderChunks(container, chunks) {
     card.className = "chunk-card" + (chunk.needs_review ? " needs-review" : "");
     const confidenceText = chunk.confidence === null || chunk.confidence === undefined
       ? "n/a" : `${chunk.confidence}%`;
+    const body = renderMarkdownWithImages(chunk.markdown, [{ snippets: chunk.flagged_snippets }]);
     card.innerHTML =
       `<div class="chunk-meta">` +
       `<span>Page ${chunk.page_number}</span>` +
       `<span>Confidence: ${confidenceText}</span>` +
       (chunk.needs_review ? `<span class="badge">Needs review</span>` : "") +
       `</div>` +
-      `<pre class="markdown-preview">${renderHighlightedMarkdown(chunk.markdown, chunk.flagged_snippets)}</pre>`;
+      `<pre class="markdown-preview">${body}</pre>`;
     container.appendChild(card);
   });
 }
@@ -231,10 +259,15 @@ let reviewFlaggedSnippets = [];
 // Re-renders the highlight overlay from the textarea's *current* value, so
 // editing a flagged line makes its highlight disappear the moment the fix
 // no longer matches the original flagged text - a natural "you fixed it"
-// signal without any extra bookkeeping.
+// signal without any extra bookkeeping. Also shows which paragraph "Read
+// aloud" (below) is currently speaking, in a different colour.
 function updateReviewHighlight() {
   const text = reviewMarkdown.value;
-  reviewMarkdownHighlight.innerHTML = renderHighlightedMarkdown(text, reviewFlaggedSnippets) + "\n";
+  const groups = [
+    { snippets: reviewSpeakingSegment ? [reviewSpeakingSegment] : [], className: "speaking" },
+    { snippets: reviewFlaggedSnippets, className: "flagged" },
+  ];
+  reviewMarkdownHighlight.innerHTML = renderHighlightedMarkdown(text, groups) + "\n";
   const stillFlagged = reviewFlaggedSnippets.filter((s) => s && text.includes(s)).length;
   reviewHighlightHint.textContent = stillFlagged
     ? `${stillFlagged} highlighted section(s) below have lower-confidence or untranscribed text - check those first.`
@@ -244,6 +277,69 @@ reviewMarkdown.addEventListener("input", updateReviewHighlight);
 reviewMarkdown.addEventListener("scroll", () => {
   reviewMarkdownHighlight.scrollTop = reviewMarkdown.scrollTop;
   reviewMarkdownHighlight.scrollLeft = reviewMarkdown.scrollLeft;
+});
+
+// --- Read aloud: speaks the converted text paragraph by paragraph (the
+// browser's own text-to-speech, no API/cost involved), highlighting each
+// paragraph in the overlay above as it's spoken. Embedded images (see
+// convert.py) are skipped entirely - reading out a wall of base64 would be
+// both useless and slow. Paragraph, not word-level, granularity: the Web
+// Speech API's word-boundary events are unreliable across browsers and
+// especially for non-Latin scripts like Thai, which this app's OCR output
+// often contains - a whole paragraph highlighted at a time is a much more
+// robust "follow along" signal than a jittery per-word one. ---
+const reviewReadAloudBtn = document.getElementById("review-read-aloud-btn");
+const _EMBEDDED_IMAGE_LINE_RE = /^!\[[^\]]*\]\(data:image\/[a-zA-Z0-9.+-]+;base64,[A-Za-z0-9+/=]+\)$/;
+
+let reviewSpeakingSegment = null;
+let ttsSegments = [];
+let ttsIndex = -1;
+let ttsSpeaking = false;
+
+function speakNextSegment() {
+  ttsIndex++;
+  if (!ttsSpeaking || ttsIndex >= ttsSegments.length) {
+    stopReadAloud();
+    return;
+  }
+  reviewSpeakingSegment = ttsSegments[ttsIndex];
+  updateReviewHighlight();
+  const utterance = new SpeechSynthesisUtterance(reviewSpeakingSegment);
+  utterance.onend = speakNextSegment;
+  utterance.onerror = speakNextSegment;
+  window.speechSynthesis.speak(utterance);
+}
+
+function startReadAloud() {
+  if (!("speechSynthesis" in window)) {
+    reviewStatus.textContent = "Text-to-speech isn't supported in this browser.";
+    return;
+  }
+  ttsSegments = reviewMarkdown.value
+    .split("\n\n")
+    .map((seg) => seg.trim())
+    .filter((seg) => seg && !_EMBEDDED_IMAGE_LINE_RE.test(seg));
+  if (!ttsSegments.length) {
+    reviewStatus.textContent = "Nothing readable on this page (only image content).";
+    return;
+  }
+  ttsIndex = -1;
+  ttsSpeaking = true;
+  reviewReadAloudBtn.textContent = "⏸ Stop reading";
+  speakNextSegment();
+}
+
+function stopReadAloud() {
+  ttsSpeaking = false;
+  reviewSpeakingSegment = null;
+  window.speechSynthesis.cancel();
+  reviewReadAloudBtn.textContent = "🔊 Read aloud";
+  updateReviewHighlight();
+}
+
+reviewReadAloudBtn.addEventListener("click", () => {
+  if (ttsSpeaking) stopReadAloud();
+  else startReadAloud();
 });
 
 function setReviewControlsEnabled(enabled) {
@@ -285,6 +381,7 @@ async function startReview(file) {
 }
 
 function showReviewPage(page) {
+  stopReadAloud();  // a new page replaced whatever was being read - don't keep reading the old one
   reviewPanel.classList.remove("hidden");
   reviewRetryBtn.classList.add("hidden");
   reviewApproveBtn.disabled = false;
@@ -303,6 +400,7 @@ function showReviewPage(page) {
 }
 
 function endReviewSession(message) {
+  stopReadAloud();
   reviewPanel.classList.add("hidden");
   reviewSessionId = null;
   setReviewControlsEnabled(true);

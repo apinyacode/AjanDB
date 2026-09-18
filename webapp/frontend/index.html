@@ -86,7 +86,10 @@
           <img id="review-image" alt="Scanned page preview">
         </div>
         <div class="review-col">
-          <h3>Converted text (editable)</h3>
+          <div class="row review-col-header">
+            <h3>Converted text (editable)</h3>
+            <button id="review-read-aloud-btn" class="ghost" type="button">🔊 Read aloud</button>
+          </div>
           <div class="markdown-editor">
             <div id="review-markdown-highlight" class="markdown-highlight" aria-hidden="true"></div>
             <textarea id="review-markdown" rows="18" spellcheck="false"></textarea>

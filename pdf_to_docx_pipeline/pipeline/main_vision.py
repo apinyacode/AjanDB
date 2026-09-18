@@ -64,7 +64,8 @@ def build_doc_items_vision(pdf_path: str, provider: str = None, model: str = Non
             stats["native_text_blocks"] += 1
 
         elif block.kind == "image":
-            doc_items.append({"kind": "image", "image_bytes": block.image_bytes})
+            doc_items.append({"kind": "image", "image_bytes": block.image_bytes,
+                               "image_ext": block.image_ext})
             stats["images"] += 1
 
         elif block.kind == "scanned_page":

@@ -7,9 +7,15 @@ the caller defaults to "Uncategorized" - the label is a convenience the
 uploader can always retype, not something worth failing a whole upload over.
 """
 import os
+import re
 
 from anthropic import Anthropic
 from openai import OpenAI
+
+# Embedded images (see convert.py) are base64 data URIs that can run to tens
+# of KB - left in, one could eat the whole excerpt budget below and leave
+# the model nothing but base64 noise to guess a category from.
+_IMAGE_MARKDOWN_RE = re.compile(r"!\[([^\]]*)\]\(data:image/[^)]*\)")
 
 DEFAULT_PROVIDER = "anthropic"
 
@@ -55,7 +61,7 @@ def suggest_category(text: str, provider: str = None, model: str = None,
                       api_key: str = None) -> str | None:
     """Returns a short label, or None if suggestion isn't possible/failed -
     the caller should default to "Uncategorized" in that case."""
-    excerpt = (text or "").strip()[:_MAX_EXCERPT_CHARS]
+    excerpt = _IMAGE_MARKDOWN_RE.sub("", text or "").strip()[:_MAX_EXCERPT_CHARS]
     if not excerpt:
         return None
 

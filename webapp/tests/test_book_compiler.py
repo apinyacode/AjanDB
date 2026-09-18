@@ -129,6 +129,40 @@ def test_compile_book_sends_matching_sources_to_model(monkeypatch, tmp_path):
     assert "A Book About Raising a Child" in result["markdown"]
 
 
+def test_strip_embedded_images_replaces_data_uri_with_short_label():
+    markdown = "Some text\n\n![handwriting](data:image/png;base64,iVBORw0KGgoAAAANSUhEUg==)\n\nMore text"
+    stripped = book_compiler._strip_embedded_images(markdown)
+    assert "base64" not in stripped
+    assert "Some text" in stripped and "More text" in stripped
+    assert "[handwriting]" in stripped
+
+
+def test_compile_book_strips_embedded_images_before_sending_to_model(monkeypatch, tmp_path):
+    conn = _tmp_conn(tmp_path)
+    huge_fake_base64 = "A" * 5000  # stand-in for a real embedded image's bulk
+    _insert(conn, "book.pdf",
+            f"Field notes about raising a child.\n\n![handwriting](data:image/png;base64,{huge_fake_base64})")
+
+    captured = {}
+
+    class _CapturingAnthropic(_FakeAnthropic):
+        def __init__(self, api_key=None):
+            super().__init__("# Book", api_key=api_key)
+
+    def _capturing_create(self, **kwargs):
+        captured["user_message"] = kwargs["messages"][0]["content"]
+        return SimpleNamespace(content=[_FakeTextBlock("# Book")])
+
+    monkeypatch.setattr(_FakeMessages, "create", _capturing_create)
+    monkeypatch.setattr(book_compiler, "Anthropic", _CapturingAnthropic)
+
+    book_compiler.compile_book("compile a book about raising a child", conn, api_key="fake")
+
+    assert huge_fake_base64 not in captured["user_message"]
+    assert "[handwriting]" in captured["user_message"]
+    assert "Field notes about raising a child" in captured["user_message"]
+
+
 def test_compile_book_uses_openai_when_provider_selected(monkeypatch, tmp_path):
     conn = _tmp_conn(tmp_path)
     _insert(conn, "parenting.md", "Tips on how to raise a child with patience.")

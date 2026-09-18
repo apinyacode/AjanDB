@@ -35,26 +35,34 @@ as searchable markdown, and compiling a book from whatever matches a topic.
   a time: the scanned page image on the left, the converted markdown in an
   editable textarea on the right, with its confidence score and review
   flag. Every exact bit of text that dragged that page's confidence below
-  100% - a shaky OCR line, a self-doubting vision-LLM transcription, or the
-  summary note standing in for handwriting/a photo that wasn't transcribed
-  at all - is highlighted right there in the text box, so you know exactly
-  what to check first instead of re-reading the whole page; fix a
-  highlighted line and its highlight disappears the moment your edit no
-  longer matches the original flagged text. Nothing is written to the
-  database until you click **Approve & Save** - fix a transcription
-  mistake before it's stored, or **Skip** a page you don't want kept at
-  all. Each approved page is saved immediately (one `INSERT` per page, not
-  a batch at the end), so closing the tab or hitting **Cancel review**
-  partway through a long book keeps everything approved so far - already
-  in the database and searchable - and only costs the pages not yet
-  reviewed. The same in-page console tracks this flow's progress too
-  (converting page N, ready for review, saved/skipped). If converting a
-  page fails (e.g. a transient vision-LLM API error), a **Retry this
-  page** button appears - it re-attempts only that page, never re-saving
-  or silently skipping one that already succeeded. The same highlighting
-  also appears (read-only) on a freshly-completed bulk upload's chunk
-  previews below the upload button - it isn't retroactively computed for
-  chunks browsed later from the database, since that data isn't stored.
+  100% - a shaky OCR line or a self-doubting vision-LLM transcription - is
+  highlighted right there in the text box, so you know exactly what to
+  check first instead of re-reading the whole page; fix a highlighted line
+  and its highlight disappears the moment your edit no longer matches the
+  original flagged text. A **🔊 Read aloud** button reads the page's text
+  out loud one paragraph at a time (the browser's own text-to-speech - no
+  API key, no cost) and highlights whichever paragraph is currently being
+  spoken in a second colour, so you can listen while following along
+  against the scan instead of only reading silently. Images, handwriting,
+  and low-confidence OCR regions are embedded as actual pictures in the
+  page's markdown rather than transcribed - see "Where is the output
+  saved?" below for exactly how, and its one real trade-off in this
+  editable view specifically. Nothing is written to the database until you
+  click **Approve & Save** - fix a transcription mistake before it's
+  stored, or **Skip** a page you don't want kept at all. Each approved
+  page is saved immediately (one `INSERT` per page, not a batch at the
+  end), so closing the tab or hitting **Cancel review** partway through a
+  long book keeps everything approved so far - already in the database and
+  searchable - and only costs the pages not yet reviewed. The same in-page
+  console tracks this flow's progress too (converting page N, ready for
+  review, saved/skipped). If converting a page fails (e.g. a transient
+  vision-LLM API error), a **Retry this page** button appears - it
+  re-attempts only that page, never re-saving or silently skipping one
+  that already succeeded. The same highlighting (and embedded images,
+  rendered as real pictures since this view is read-only) also appears on
+  a freshly-completed bulk upload's chunk previews below the upload button
+  - it isn't retroactively computed for chunks browsed later from the
+  database, since that data isn't stored.
 - **Data Search** — full-text keyword search (SQLite FTS5) over every stored
   chunk, returning matches with their filename, page number, category,
   confidence, review flag, and a highlighted snippet. Below the search box,
@@ -174,13 +182,15 @@ the server-side default provider when the frontend doesn't specify one.
 python3 -m pytest tests/ -v
 ```
 
-144 tests total (42 in the pipeline, 102 here) covering the SQLite/FTS5 layer
+149 tests total (42 in the pipeline, 107 here) covering the SQLite/FTS5 layer
 (including confidence/needs_review/category columns, and the book-browsing
 queries' handling of duplicate/re-uploaded pages), chunking (per-page for
-PDFs, character-budget for plain text, and which exact snippets get flagged
-for the review UI's highlighting), category suggestion (mocked model calls,
-graceful no-key fallback), the book compiler's retrieval + error
-handling for both providers, browser-supplied key resolution/priority, the
+PDFs, character-budget for plain text, which exact snippets get flagged for
+the review UI's highlighting, and image embedding with correct MIME types),
+category suggestion (mocked model calls, graceful no-key fallback), the
+book compiler's retrieval + error handling for both providers (plus both
+stripping embedded images before sending anything to a model), browser-
+supplied key resolution/priority, the
 background upload-job lifecycle, the page-by-page review session's state
 machine (approve/skip/retry/cancel, including recovering from a failed
 page conversion without duplicating or losing work), the FastAPI endpoints
@@ -252,6 +262,21 @@ order into a single downloadable markdown file. `pdf_to_docx_pipeline`'s
 own CLI (`python -m pipeline.main input.pdf output.docx`) is a separate
 tool that writes a `.docx`, not `.md`, and isn't part of this webapp.
 
+**What happens to images, handwriting, and low-confidence regions?**
+They're embedded directly in that same markdown text, in reading order, as
+`![alt](data:image/png;base64,...)` - a real, self-contained picture, not
+a "see the original document" placeholder note. That's true everywhere:
+the stored row, the exported `.md` file, and every read-only view (a
+freshly-completed bulk upload's preview, Data Search's "View pages") all
+render it as an actual `<img>`. The one place it doesn't render as a
+picture is the **page-by-page review** textarea, since it's plain-text
+editable and a `<textarea>` has no way to show an inline image - you'll
+see the literal base64 there instead. Nothing is lost or different about
+what gets saved; it's purely a display limitation of that one editable
+view. Handwriting and low-confidence regions are also flagged for the
+review UI's highlighting (see "Review each page before saving" above), the
+same as an uncertain OCR text line; a plain photo isn't.
+
 **Re-uploading the same file:** nothing here deduplicates chunks at
 insert time - re-uploading a book (or `chunked_upload.py` re-running a
 batch without `--resume`) adds a second row per page rather than
@@ -274,12 +299,30 @@ column layout.
   are conceptually related without using them. Fine for a personal library
   at moderate scale; a vector index would be the natural upgrade if keyword
   search starts missing relevant files.
-- Images (photos, handwriting kept as images by the PDF pipeline) are not
-  stored or shown - only a text placeholder note. The store is optimised for
-  searchable/compilable text content, not visual fidelity.
-- The book compiler sends up to 20 matching chunks (8000 chars each) to the
-  model per request - a very large personal library on a broad topic could
-  exceed that and only see a partial set of matches.
+- Images, handwriting, and low-confidence OCR regions are embedded directly
+  in a page's markdown as base64 `data:image/...` URIs (see "Where is the
+  output saved?" below) rather than transcribed - a photo-heavy book can
+  make some rows in `data/ajandb.sqlite3` noticeably larger. In the
+  **page-by-page review** textarea specifically, that base64 text shows up
+  as a long literal string rather than a picture - plain `<textarea>`s
+  can't render inline images, so there's no way to show it as a picture
+  there while keeping it editable; the bulk-upload preview and Data
+  Search's "View pages"/export all render it as a real `<img>` instead,
+  since those are read-only. There's nothing meaningful to hand-edit in an
+  embedded image's own markdown line anyway - only the surrounding text.
+- The book compiler and category auto-suggestion both strip embedded images
+  down to a short `[label]` placeholder before sending anything to the
+  model, so a photo-heavy page doesn't burn its whole context budget on
+  meaningless base64 - but the book compiler still sends up to 20 matching
+  chunks (8000 chars each, post-stripping) per request, so a very large
+  personal library on a broad topic could still exceed that and only see a
+  partial set of matches.
+- **Read aloud** (in page-by-page review) uses the browser's own
+  `speechSynthesis` API - no server call, no API key, but voice
+  availability/quality (especially for Thai and other non-English text)
+  depends entirely on what the browser/OS provides. It reads one paragraph
+  at a time and highlights the one currently being spoken; embedded images
+  are skipped rather than read as base64 gibberish.
 - Audio and video upload aren't supported yet (speech-to-text would need
   OpenAI's Whisper API specifically - Claude has no audio API - plus
   `ffmpeg` for video). Deliberately deferred rather than half-built.

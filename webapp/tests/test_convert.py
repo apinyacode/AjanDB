@@ -84,26 +84,31 @@ def test_items_to_chunks_flags_low_confidence_page_for_review():
     assert chunks[0]["needs_review"] is True
 
 
+_FAKE_IMAGE_BYTES = b"fake-png-bytes-for-testing"
+
+
 def test_items_to_chunks_flags_handwriting_and_uncertain_regardless_of_confidence():
     items = [
         {"kind": "heading", "page": 0},
         {"kind": "text", "lang": "en", "text": "Clean high-confidence text", "confidence": 99.0},
-        {"kind": "handwriting", "image_bytes": b""},
+        {"kind": "handwriting", "image_bytes": _FAKE_IMAGE_BYTES},
     ]
     chunks = convert.items_to_chunks(items)
     assert chunks[0]["needs_review"] is True
-    assert "1 handwritten/low-confidence region(s)" in chunks[0]["markdown"]
+    assert "![handwriting](data:image/png;base64," in chunks[0]["markdown"]
+    assert chunks[0]["flagged_snippets"]  # the embedded image itself is flagged
 
 
 def test_items_to_chunks_plain_image_does_not_trigger_review():
     items = [
         {"kind": "heading", "page": 0},
-        {"kind": "text", "lang": "en", "text": "Clean text", "confidence": 99.0},
-        {"kind": "image", "image_bytes": b""},
+        {"kind": "text", "lang": "en", "text": "Clean text", "confidence": 100.0},
+        {"kind": "image", "image_bytes": _FAKE_IMAGE_BYTES},
     ]
     chunks = convert.items_to_chunks(items)
     assert chunks[0]["needs_review"] is False
-    assert "1 image(s)" in chunks[0]["markdown"]
+    assert "![image](data:image/png;base64," in chunks[0]["markdown"]
+    assert chunks[0]["flagged_snippets"] == []  # a plain photo isn't flagged for review
 
 
 def test_items_to_chunks_completely_blank_page_gets_placeholder():
@@ -114,10 +119,26 @@ def test_items_to_chunks_completely_blank_page_gets_placeholder():
 
 
 def test_items_to_chunks_page_with_only_an_image_reports_it_not_a_placeholder():
-    items = [{"kind": "heading", "page": 0}, {"kind": "image", "image_bytes": b""}]
+    items = [{"kind": "heading", "page": 0}, {"kind": "image", "image_bytes": _FAKE_IMAGE_BYTES}]
     chunks = convert.items_to_chunks(items)
-    assert "1 image(s)" in chunks[0]["markdown"]
+    assert "![image](data:image/png;base64," in chunks[0]["markdown"]
     assert "No extractable text" not in chunks[0]["markdown"]
+
+
+def test_items_to_chunks_embeds_image_with_correct_mime_type_from_image_ext():
+    items = [{"kind": "heading", "page": 0},
+             {"kind": "image", "image_bytes": _FAKE_IMAGE_BYTES, "image_ext": "jpeg"}]
+    chunks = convert.items_to_chunks(items)
+    assert "data:image/jpeg;base64," in chunks[0]["markdown"]
+
+
+def test_items_to_chunks_skips_embedding_when_image_bytes_missing():
+    # Defensive case: if a doc_item genuinely has no bytes, don't emit a
+    # broken image reference - just drop it, still counted for needs_review.
+    items = [{"kind": "heading", "page": 0}, {"kind": "handwriting", "image_bytes": b""}]
+    chunks = convert.items_to_chunks(items)
+    assert "![" not in chunks[0]["markdown"]
+    assert chunks[0]["needs_review"] is True
 
 
 def test_items_to_chunks_flags_lines_with_confidence_below_100():
@@ -142,17 +163,16 @@ def test_items_to_chunks_no_flagged_snippets_when_everything_is_confident():
     assert chunks[0]["flagged_snippets"] == []
 
 
-def test_items_to_chunks_flags_the_not_shown_as_text_summary_line():
+def test_items_to_chunks_embeds_images_in_reading_order_between_text():
     items = [
         {"kind": "heading", "page": 0},
-        {"kind": "text", "lang": "en", "text": "Clean text", "confidence": 100.0},
-        {"kind": "handwriting", "image_bytes": b""},
+        {"kind": "text", "lang": "en", "text": "Before the image", "confidence": 100.0},
+        {"kind": "image", "image_bytes": _FAKE_IMAGE_BYTES},
+        {"kind": "text", "lang": "en", "text": "After the image", "confidence": 100.0},
     ]
     chunks = convert.items_to_chunks(items)
-    assert len(chunks[0]["flagged_snippets"]) == 1
-    summary_snippet = chunks[0]["flagged_snippets"][0]
-    assert "Not shown as text" in summary_snippet
-    assert summary_snippet in chunks[0]["markdown"]
+    markdown = chunks[0]["markdown"]
+    assert markdown.index("Before the image") < markdown.index("![image]") < markdown.index("After the image")
 
 
 def test_pdf_to_markdown_extracts_text_as_per_page_chunks(tmp_path):
@@ -171,9 +191,15 @@ def test_pdf_to_markdown_extracts_text_as_per_page_chunks(tmp_path):
     assert chunks[0]["flagged_snippets"] == []  # nothing guessed on this page
 
     page3 = chunks[2]
-    assert "Not shown as text" in page3["markdown"]  # the simulated handwriting
+    # page 3 has a real embedded photo (kind="image", not flagged) and the
+    # simulated handwritten note (kind="handwriting", flagged) - both must
+    # be embedded as actual images rather than a placeholder note.
+    assert page3["markdown"].count("![") == 2
+    assert "![image](data:image/png;base64," in page3["markdown"]
+    assert "![handwriting](data:image/png;base64," in page3["markdown"]
     assert page3["needs_review"] is True
-    assert any("Not shown as text" in s for s in page3["flagged_snippets"])
+    assert any(s.startswith("![handwriting]") for s in page3["flagged_snippets"])
+    assert not any(s.startswith("![image]") for s in page3["flagged_snippets"])
 
 
 def test_pdf_to_markdown_reports_progress_per_page(tmp_path):
