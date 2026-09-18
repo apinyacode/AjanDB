@@ -248,3 +248,79 @@ def test_start_cleans_up_nothing_itself_on_failure_but_does_not_register_session
         review.start(_session_pdf(tmp_path), "book.pdf", langs="eng+tha")
 
     assert review._sessions == {}
+
+
+# --- Second-opinion verification (/api/review/{id}/verify) ---
+
+def test_word_diff_reports_full_agreement_for_identical_text():
+    diff = review._word_diff("Hello world", "Hello world")
+    assert diff["agreement_ratio"] == 100.0
+    assert diff["segments"] == [{"tag": "equal", "text": "Hello world"}]
+
+
+def test_word_diff_flags_a_single_changed_word_as_one_segment():
+    diff = review._word_diff("The cat sat", "The dog sat")
+    assert diff["agreement_ratio"] < 100.0
+    tags = [s["tag"] for s in diff["segments"]]
+    assert "replace" in tags
+    replaced = next(s for s in diff["segments"] if s["tag"] == "replace")
+    assert replaced["a"] == "cat"
+    assert replaced["b"] == "dog"
+
+
+def test_word_diff_completely_different_text_has_low_agreement():
+    diff = review._word_diff("Completely different content here", "Nothing at all in common")
+    assert diff["agreement_ratio"] < 60.0
+    assert all(s["tag"] != "equal" for s in diff["segments"] if "text" in s and s["text"].strip())
+
+
+def test_verify_second_opinion_returns_diff_against_pending_page(tmp_path, monkeypatch):
+    started = review.start(_session_pdf(tmp_path), "book.pdf", langs="eng+tha")
+    session_id = started["session_id"]
+    original_markdown = started["page"]["markdown"]
+
+    def fake_pdf_to_markdown_vision(pdf_path, provider=None, model=None, api_key=None):
+        return [{"page_number": 1, "markdown": original_markdown.replace("Notes", "NOTES"),
+                  "confidence": 90.0, "needs_review": False, "flagged_snippets": []}]
+
+    monkeypatch.setattr(review.convert, "pdf_to_markdown_vision", fake_pdf_to_markdown_vision)
+
+    result = review.verify_second_opinion(session_id, provider="openai", api_key="fake-key")
+
+    assert result["provider"] == "openai"
+    assert result["original_markdown"] == original_markdown
+    assert "NOTES" in result["second_markdown"]
+    assert 0 < result["agreement_ratio"] < 100
+    assert any(s["tag"] != "equal" for s in result["diff"])
+    assert "Verification agreement" in result["log"][-1]
+
+    # doesn't touch approve/skip state - the session is untouched, still on page 1
+    assert review._get_session(session_id)["current_index"] == 0
+    assert review._get_session(session_id)["pending"] is not None
+
+
+def test_verify_second_opinion_raises_when_no_page_pending(tmp_path):
+    started = review.start(_session_pdf(tmp_path), "book.pdf", langs="eng+tha")
+    session_id = started["session_id"]
+    review.approve(session_id)
+    review.approve(session_id)
+    review.approve(session_id)  # last page -> session finishes and is cleaned up
+
+    with pytest.raises(KeyError):
+        review.verify_second_opinion(session_id, provider="anthropic", api_key="fake")
+
+
+def test_verify_second_opinion_propagates_missing_api_key_error(tmp_path, monkeypatch):
+    started = review.start(_session_pdf(tmp_path), "book.pdf", langs="eng+tha")
+    session_id = started["session_id"]
+    # page 1 is born-digital text (no OCR needed at all, so no API key check
+    # would fire) - advance to page 2, a genuinely scanned page, to test this.
+    review.approve(session_id)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+
+    with pytest.raises(RuntimeError):
+        review.verify_second_opinion(session_id, provider="anthropic", api_key=None)
+
+    # session must still be usable afterwards - verification failing shouldn't break review
+    session = review._get_session(session_id)
+    assert session["pending"] is not None

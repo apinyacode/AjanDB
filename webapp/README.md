@@ -43,7 +43,21 @@ as searchable markdown, and compiling a book from whatever matches a topic.
   out loud one paragraph at a time (the browser's own text-to-speech - no
   API key, no cost) and highlights whichever paragraph is currently being
   spoken in a second colour, so you can listen while following along
-  against the scan instead of only reading silently. Images, handwriting,
+  against the scan instead of only reading silently.
+
+  **🔍 Verify with second model** cross-checks the page against a vision-LLM
+  call from whichever provider you pick (defaulting to whichever one *wasn't*
+  used for the original conversion), and shows a word-level diff plus an
+  agreement percentage - a much more trustworthy signal than either engine's
+  own confidence score alone, since a vision-LLM's confidence is just the
+  model guessing how sure it is (see "What does the confidence % actually
+  mean?" below). It's opt-in, not automatic, since it costs a real API call
+  - a hint appears on pages that are already flagged, exactly where a second
+  opinion is worth that cost. Doesn't touch approve/skip/save state; safe to
+  run more than once, and the diff panel is purely informational (it doesn't
+  overwrite your editable text - copy over anything you agree with by hand).
+
+  Images, handwriting,
   and low-confidence OCR regions are saved as real `.jpg` files and linked
   from the page's markdown rather than transcribed - see "Where is the
   output saved?" below for exactly how. Nothing is written to the database
@@ -181,7 +195,7 @@ the server-side default provider when the frontend doesn't specify one.
 python3 -m pytest tests/ -v
 ```
 
-156 tests total (42 in the pipeline, 114 here) covering the SQLite/FTS5 layer
+165 tests total (42 in the pipeline, 123 here) covering the SQLite/FTS5 layer
 (including confidence/needs_review/category columns, and the book-browsing
 queries' handling of duplicate/re-uploaded pages), chunking (per-page for
 PDFs, character-budget for plain text, which exact snippets get flagged for
@@ -192,8 +206,9 @@ providers (plus both stripping embedded image links before sending
 anything to a model), browser-supplied key resolution/priority, the
 background upload-job lifecycle, the page-by-page review session's state
 machine (approve/skip/retry/cancel, including recovering from a failed
-page conversion without duplicating or losing work), the FastAPI endpoints
-via `TestClient`, and the standalone chunked-upload script below.
+page conversion without duplicating or losing work, and the second-opinion
+word-diff verification), the FastAPI endpoints via `TestClient`, and the
+standalone chunked-upload script below.
 
 ## Digitising a whole book without the web upload (`scripts/chunked_upload.py`)
 
@@ -255,6 +270,31 @@ library, not something to commit) plus extracted images as real files
 under `data/images/` (see below) - delete both to start fresh. Deleting
 just the database without the images (or vice versa) leaves orphaned
 files/broken links; there's no cleanup tool for that yet.
+
+**What does the confidence % actually mean?** Different things depending
+on the engine, worth knowing before you trust it:
+
+- **Classical (Tesseract)**: a real, per-character recognition score from
+  the OCR engine itself, averaged per line then per page. A genuine
+  statistical signal - reasonably well-calibrated as a *relative* ranking
+  (90% really is more trustworthy than 60%), though still just one
+  engine's own self-measurement, not independently verified accuracy.
+- **Vision-LLM (Claude/GPT-4o)**: the model is literally asked to guess a
+  number for "how sure am I" (see the prompt in `pipeline/vision_ocr.py`).
+  This is **not calibrated** - LLM self-reported confidence is well known
+  to correlate poorly with actual accuracy, and models tend toward
+  overconfidence. Treat it as a rough hint, never as ground truth.
+
+`needs_review` fires when average confidence drops below 75%, or
+unconditionally whenever handwriting or a low-confidence region was
+found, regardless of the number. **Verify with second model** (see "Review
+each page before saving" above) exists specifically to give you a better
+signal than either engine's own confidence alone: independent agreement
+between two separately-run models is much stronger evidence than one
+model's self-report, and the diff shows exactly which words to check if
+they don't agree. It isn't proof either, though - both models can share
+the same blind spot (e.g. genuinely illegible handwriting) and
+confidently agree on the same wrong answer.
 
 **Where is the output .md saved?** Nowhere, by default - converted
 markdown is stored purely as text in that SQLite file, one row per chunk,

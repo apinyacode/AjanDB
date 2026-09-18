@@ -401,6 +401,65 @@ def test_review_unknown_session_returns_404(tmp_path, monkeypatch):
     assert client.post("/api/review/not-a-real-session/skip").status_code == 404
     assert client.post("/api/review/not-a-real-session/cancel").status_code == 404
     assert client.post("/api/review/not-a-real-session/retry").status_code == 404
+    assert client.post("/api/review/not-a-real-session/verify", json={}).status_code == 404
+
+
+# --- Second-opinion verification (/api/review/{id}/verify) ---
+
+def test_verify_returns_diff_and_agreement_ratio(tmp_path, monkeypatch):
+    client = _client(tmp_path, monkeypatch)
+    started = _start_review(client).json()
+    session_id = started["session_id"]
+    original_markdown = started["page"]["markdown"]
+
+    def fake_pdf_to_markdown_vision(pdf_path, provider=None, model=None, api_key=None):
+        return [{"page_number": 1, "markdown": original_markdown.replace("Notes", "NOTES"),
+                  "confidence": 88.0, "needs_review": False, "flagged_snippets": []}]
+
+    monkeypatch.setattr(main_module.review.convert, "pdf_to_markdown_vision", fake_pdf_to_markdown_vision)
+
+    resp = client.post(f"/api/review/{session_id}/verify", json={"provider": "openai", "openai_api_key": "fake"})
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["provider"] == "openai"
+    assert "NOTES" in body["second_markdown"]
+    assert 0 < body["agreement_ratio"] < 100
+    assert any(seg["tag"] != "equal" for seg in body["diff"])
+
+    # verifying doesn't advance or save anything
+    assert client.get("/api/documents").json() == []
+
+
+def test_verify_uses_matching_provider_api_key(tmp_path, monkeypatch):
+    client = _client(tmp_path, monkeypatch)
+    session_id = _start_review(client).json()["session_id"]
+
+    captured = {}
+
+    def fake_pdf_to_markdown_vision(pdf_path, provider=None, model=None, api_key=None):
+        captured["api_key"] = api_key
+        return [{"page_number": 1, "markdown": "second opinion text", "confidence": 90.0,
+                  "needs_review": False, "flagged_snippets": []}]
+
+    monkeypatch.setattr(main_module.review.convert, "pdf_to_markdown_vision", fake_pdf_to_markdown_vision)
+
+    resp = client.post(
+        f"/api/review/{session_id}/verify",
+        json={"provider": "openai", "anthropic_api_key": "ak", "openai_api_key": "ok"},
+    )
+    assert resp.status_code == 200, resp.text
+    assert captured["api_key"] == "ok"
+
+
+def test_verify_returns_503_without_matching_api_key(tmp_path, monkeypatch):
+    client = _client(tmp_path, monkeypatch)
+    session_id = _start_review(client).json()["session_id"]
+    client.post(f"/api/review/{session_id}/approve", json={})  # advance to page 2 (needs real OCR)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+    resp = client.post(f"/api/review/{session_id}/verify", json={"provider": "openai"})
+    assert resp.status_code == 503
+    assert "OPENAI_API_KEY" in resp.json()["detail"]
 
 
 # --- Serving extracted images (/images/*) ---

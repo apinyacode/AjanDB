@@ -302,6 +302,33 @@ def review_retry(session_id: str):
         raise HTTPException(422, f"Failed to convert the next page: {e}")
 
 
+class VerifyRequest(BaseModel):
+    provider: str | None = None  # which vision-LLM to cross-check against - "anthropic" (default) or "openai"
+    model: str | None = None
+    anthropic_api_key: str | None = None  # typed into the frontend - stored only in the browser
+    openai_api_key: str | None = None
+
+
+@app.post("/api/review/{session_id}/verify")
+def review_verify(session_id: str, req: VerifyRequest):
+    """Cross-checks the page currently awaiting review against a second
+    vision-LLM call, independent of whatever engine/provider produced the
+    pending transcription, and returns a word-level diff plus an agreement
+    percentage - see review.verify_second_opinion for why this is a more
+    trustworthy signal than either model's own confidence score. Doesn't
+    touch approve/skip/save state; safe to call more than once."""
+    api_key = _resolve_client_key(req.provider, req.anthropic_api_key, req.openai_api_key)
+    try:
+        return review.verify_second_opinion(
+            session_id, provider=req.provider, model=req.model, api_key=api_key)
+    except KeyError:
+        raise HTTPException(404, "Unknown review session")
+    except RuntimeError as e:
+        raise HTTPException(503, str(e))
+    except Exception as e:
+        raise HTTPException(422, f"Failed to get a second opinion: {e}")
+
+
 @app.post("/api/review/{session_id}/cancel")
 def review_cancel(session_id: str):
     try:

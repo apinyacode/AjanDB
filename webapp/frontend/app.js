@@ -255,6 +255,13 @@ const reviewSkipBtn = document.getElementById("review-skip-btn");
 const reviewRetryBtn = document.getElementById("review-retry-btn");
 const reviewCancelBtn = document.getElementById("review-cancel-btn");
 const reviewStatus = document.getElementById("review-status");
+const reviewVerifyBtn = document.getElementById("review-verify-btn");
+const verifyProviderSelect = document.getElementById("verify-provider-select");
+const verifyStatus = document.getElementById("verify-status");
+const verifyPanel = document.getElementById("verify-panel");
+const verifyAgreementLabel = document.getElementById("verify-agreement-label");
+const verifyDiffEl = document.getElementById("verify-diff");
+const verifySuggestionHint = document.getElementById("verify-suggestion-hint");
 
 let reviewSessionId = null;
 let reviewTotalPages = 0;
@@ -346,6 +353,53 @@ reviewReadAloudBtn.addEventListener("click", () => {
   else startReadAloud();
 });
 
+// --- Verify with a second model: cross-checks the pending page against a
+// vision-LLM call independent of whatever engine/provider produced it, and
+// shows a word-level diff. Neither engine's own confidence score is fully
+// trustworthy alone (a vision-LLM's is just the model guessing how sure it
+// is) - agreement between two independently-run models is a much stronger
+// signal, and the diff points at exactly which words to check if they
+// don't agree. Costs a real API call, so this is opt-in, not automatic -
+// but the page's own confidence/needs_review flags are exactly the case
+// this is most worth doing for, so that's called out with a hint. ---
+function renderWordDiff(segments) {
+  return segments.map((seg) => {
+    if (seg.tag === "equal") return escapeHtml(seg.text);
+    let html = "";
+    if (seg.a) html += `<span class="diff-del">${escapeHtml(seg.a)}</span>`;
+    if (seg.b) html += `<span class="diff-ins">${escapeHtml(seg.b)}</span>`;
+    return html;
+  }).join("");
+}
+
+reviewVerifyBtn.addEventListener("click", async () => {
+  if (!reviewSessionId) return;
+  const provider = verifyProviderSelect.value;
+  const providerLabel = provider === "anthropic" ? "Claude" : "GPT-4o";
+  verifyStatus.textContent = `Asking ${providerLabel} for a second opinion…`;
+  verifyPanel.classList.add("hidden");
+  reviewVerifyBtn.disabled = true;
+  try {
+    const res = await fetch(`/api/review/${reviewSessionId}/verify`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ provider, ...currentApiKeys() }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || "Verification failed");
+    renderConsole(data.log);
+    verifyAgreementLabel.textContent =
+      `${data.agreement_ratio}% word-level agreement with ${providerLabel}`;
+    verifyDiffEl.innerHTML = renderWordDiff(data.diff);
+    verifyPanel.classList.remove("hidden");
+    verifyStatus.textContent = "";
+  } catch (err) {
+    verifyStatus.textContent = `Error: ${err.message}`;
+  } finally {
+    reviewVerifyBtn.disabled = false;
+  }
+});
+
 function setReviewControlsEnabled(enabled) {
   document.getElementById("file-input").disabled = !enabled;
   document.getElementById("upload-btn").disabled = !enabled;
@@ -377,6 +431,13 @@ async function startReview(file) {
     reviewTotalPages = data.total_pages;
     status.textContent = "";
     renderConsole(data.log);
+
+    // Default "verify with second model" to whichever provider *wasn't*
+    // used for this conversion, so one click gets a genuinely independent
+    // second opinion instead of just re-asking the same model.
+    const originalProvider = engine === "vision" ? uploadProviderSelect.value : "anthropic";
+    verifyProviderSelect.value = originalProvider === "anthropic" ? "openai" : "anthropic";
+
     showReviewPage(data.page);
   } catch (err) {
     status.textContent = `Error: ${err.message}`;
@@ -401,11 +462,16 @@ function showReviewPage(page) {
   reviewFlaggedSnippets = page.flagged_snippets || [];
   updateReviewHighlight();
   reviewStatus.textContent = "";
+
+  verifyPanel.classList.add("hidden");
+  verifyStatus.textContent = "";
+  verifySuggestionHint.classList.toggle("hidden", !page.needs_review);
 }
 
 function endReviewSession(message) {
   stopReadAloud();
   reviewPanel.classList.add("hidden");
+  verifyPanel.classList.add("hidden");
   reviewSessionId = null;
   setReviewControlsEnabled(true);
   document.getElementById("upload-status").textContent = message;

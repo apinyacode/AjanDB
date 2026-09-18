@@ -311,6 +311,15 @@ mark {
 
 .hidden { display: none; }
 
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+}
+
 .review-panel {
   border: 1px solid var(--border);
   border-radius: 8px;
@@ -423,4 +432,36 @@ mark {
 
 #review-panel .row {
   margin-top: 0.75rem;
+}
+
+.verify-row select {
+  padding: 0.4rem;
+  font-size: 0.85rem;
+}
+
+.verify-panel {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.75rem;
+  margin-top: 0.5rem;
+}
+
+.verify-panel .markdown-preview {
+  margin-top: 0.5rem;
+}
+
+.diff-del {
+  background: var(--danger-bg);
+  color: var(--danger);
+  text-decoration: line-through;
+  border-radius: 2px;
+  padding: 0 0.1rem;
+}
+
+.diff-ins {
+  background: rgba(47, 93, 80, 0.18);
+  color: var(--accent);
+  text-decoration: none;
+  border-radius: 2px;
+  padding: 0 0.1rem;
 }

@@ -97,6 +97,26 @@
           <p id="review-highlight-hint" class="hint small"></p>
         </div>
       </div>
+      <p id="verify-suggestion-hint" class="hint small hidden">
+        This page is flagged - confidence scores aren't fully reliable (especially the
+        vision-LLM's own self-reported one), so cross-checking it against a second model below
+        is worth the extra API call.
+      </p>
+      <div class="row verify-row">
+        <button id="review-verify-btn" class="ghost" type="button">🔍 Verify with second model</button>
+        <label for="verify-provider-select" class="sr-only">Second model</label>
+        <select id="verify-provider-select">
+          <option value="anthropic">Claude</option>
+          <option value="openai">GPT (OpenAI)</option>
+        </select>
+        <span id="verify-status" class="status"></span>
+      </div>
+      <div id="verify-panel" class="verify-panel hidden">
+        <div class="chunk-meta">
+          <strong id="verify-agreement-label"></strong>
+        </div>
+        <pre id="verify-diff" class="markdown-preview"></pre>
+      </div>
       <div class="row">
         <button id="review-approve-btn">Approve &amp; Save</button>
         <button id="review-skip-btn" class="ghost" type="button">Skip (don't save)</button>

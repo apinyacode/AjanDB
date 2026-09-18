@@ -29,7 +29,9 @@ State machine per session:
     that's just waiting for approval.
 """
 import base64
+import difflib
 import os
+import re
 import threading
 import uuid
 
@@ -37,6 +39,32 @@ from . import categorize, convert, db
 
 _sessions: dict[str, dict] = {}
 _lock = threading.Lock()
+
+_WORD_TOKEN_RE = re.compile(r"\S+|\s+")
+
+
+def _word_diff(a: str, b: str) -> dict:
+    """Word-level diff between two transcriptions of the same page - lets a
+    human see exactly which words two models disagree on, instead of
+    trusting either one's own (unreliable, self-reported for a vision-LLM)
+    confidence score alone. Tokenizes on whitespace boundaries rather than
+    characters, so a single retyped word shows as one change, not a
+    scattering of single-character ones.
+
+    Returns {"segments": [...], "agreement_ratio": 0-100}. Each segment is
+    {"tag": "equal", "text": ...} where both versions agree, or
+    {"tag": "replace"|"delete"|"insert", "a": ..., "b": ...} where they
+    differ ("a" is the first text, "b" the second)."""
+    a_tokens = _WORD_TOKEN_RE.findall(a)
+    b_tokens = _WORD_TOKEN_RE.findall(b)
+    matcher = difflib.SequenceMatcher(None, a_tokens, b_tokens, autojunk=False)
+    segments = []
+    for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+        if tag == "equal":
+            segments.append({"tag": "equal", "text": "".join(a_tokens[i1:i2])})
+        else:
+            segments.append({"tag": tag, "a": "".join(a_tokens[i1:i2]), "b": "".join(b_tokens[j1:j2])})
+    return {"segments": segments, "agreement_ratio": round(matcher.ratio() * 100, 1)}
 
 
 def _log(session: dict, message: str):
@@ -232,6 +260,52 @@ def retry(session_id: str) -> dict:
     if session["pending"] is not None:
         raise RuntimeError("A page is already awaiting review - approve or skip it first.")
     return _advance(session_id, session)
+
+
+def verify_second_opinion(session_id: str, provider: str = None, model: str = None,
+                           api_key: str = None) -> dict:
+    """Re-converts the currently-pending page with the vision-LLM engine
+    under `provider`/`model`/`api_key` - independent of whatever engine or
+    provider actually produced the pending transcription - and returns
+    both texts plus a word-level diff (see _word_diff). A cross-check
+    against a second model, since neither engine's own confidence score is
+    fully trustworthy on its own (Tesseract's is a real per-character
+    score but still just one engine's self-measurement; a vision-LLM's is
+    literally the model guessing how sure it is, which is well known to
+    correlate poorly with actual accuracy) - agreement between two
+    independently-run models is a much stronger signal, and the diff shows
+    exactly which words to look at if they don't. Doesn't touch the
+    session's approve/skip state at all - purely a side-check on the page
+    currently being reviewed, safe to call as many times as you like."""
+    session = _get_session(session_id)
+    pending = session["pending"]
+    if pending is None:
+        raise RuntimeError(
+            "No page is currently awaiting review for this session - approve, "
+            "skip, or retry first.")
+
+    _log(session, f"Verifying page {pending['page_number']}/{session['total_pages']} "
+                  f"against {provider or 'anthropic'}...")
+    tmp_pdf = convert.extract_single_page_pdf(session["pdf_path"], session["current_index"])
+    try:
+        chunks = convert.pdf_to_markdown_vision(tmp_pdf, provider=provider, model=model, api_key=api_key)
+    except Exception as e:
+        _log(session, f"ERROR verifying page {pending['page_number']}: {e}")
+        raise
+    finally:
+        os.unlink(tmp_pdf)
+
+    second_markdown = chunks[0]["markdown"]
+    diff = _word_diff(pending["markdown"], second_markdown)
+    _log(session, f"Verification agreement: {diff['agreement_ratio']}%")
+    return {
+        "provider": provider or "anthropic",
+        "original_markdown": pending["markdown"],
+        "second_markdown": second_markdown,
+        "diff": diff["segments"],
+        "agreement_ratio": diff["agreement_ratio"],
+        "log": session["log"],
+    }
 
 
 def cancel(session_id: str) -> dict:
