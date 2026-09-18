@@ -39,8 +39,13 @@ _sessions: dict[str, dict] = {}
 _lock = threading.Lock()
 
 
-def _log(session_id: str, message: str):
-    print(f"[review {session_id[:8]}] {message}", flush=True)
+def _log(session: dict, message: str):
+    """Prints to the server console and appends to the session's own log -
+    every review.py response includes that log so the frontend can render a
+    running "converting / ready for review / saved" console instead of just
+    a single current-status line."""
+    print(f"[review {session['session_id'][:8]}] {message}", flush=True)
+    session["log"].append(message)
 
 
 def _get_session(session_id: str) -> dict:
@@ -96,6 +101,7 @@ def start(pdf_path: str, filename: str, engine: str = "classical", provider: str
 
     session_id = uuid.uuid4().hex
     session = {
+        "session_id": session_id,
         "pdf_path": pdf_path,
         "filename": filename,
         "engine": engine,
@@ -108,16 +114,23 @@ def start(pdf_path: str, filename: str, engine: str = "classical", provider: str
         "current_index": None,
         "pending": None,
         "saved_chunk_ids": [],
+        "log": [],
     }
-    _log(session_id, f"Started: {filename} ({total_pages} page(s), engine={engine})")
+    _log(session, f"Started: {filename} ({total_pages} page(s), engine={engine})")
+    _log(session, f"Converting page 1/{total_pages}...")
 
-    page = _convert_one_page(session, 0)  # may raise - session is not registered below if so
+    try:
+        page = _convert_one_page(session, 0)  # may raise - session is not registered below if so
+    except Exception as e:
+        _log(session, f"ERROR converting page 1/{total_pages}: {e}")
+        raise
     session["current_index"] = 0
     session["pending"] = page
+    _log(session, f"Page 1/{total_pages} ready for review")
     with _lock:
         _sessions[session_id] = session
 
-    return {"session_id": session_id, "total_pages": total_pages, "page": page}
+    return {"session_id": session_id, "total_pages": total_pages, "page": page, "log": session["log"]}
 
 
 def _advance(session_id: str, session: dict) -> dict:
@@ -126,22 +139,30 @@ def _advance(session_id: str, session: dict) -> dict:
     `current_index`/`pending` exactly as retry() expects to find them."""
     next_index = session["current_index"] + 1
     if next_index >= session["total_pages"]:
-        _log(session_id, f"Finished: {len(session['saved_chunk_ids'])} page(s) saved")
+        _log(session, f"Finished: {len(session['saved_chunk_ids'])} page(s) saved")
+        log = session["log"]
         _cleanup(session_id, session)
         return {
             "done": True, "page": None,
             "total_saved": len(session["saved_chunk_ids"]),
             "category": session["category"] or "Uncategorized",
+            "log": log,
         }
 
-    _log(session_id, f"Converting page {next_index + 1}/{session['total_pages']}...")
-    page = _convert_one_page(session, next_index)
+    _log(session, f"Converting page {next_index + 1}/{session['total_pages']}...")
+    try:
+        page = _convert_one_page(session, next_index)
+    except Exception as e:
+        _log(session, f"ERROR converting page {next_index + 1}/{session['total_pages']}: {e}")
+        raise
     session["current_index"] = next_index
     session["pending"] = page
+    _log(session, f"Page {next_index + 1}/{session['total_pages']} ready for review")
     return {
         "done": False, "page": page,
         "total_saved": len(session["saved_chunk_ids"]),
         "category": session["category"],
+        "log": session["log"],
     }
 
 
@@ -178,7 +199,7 @@ def approve(session_id: str, markdown: str = None, needs_review: bool = None) ->
         conn.close()
     session["saved_chunk_ids"].extend(ids)
     session["pending"] = None
-    _log(session_id, f"Saved page {chunk['page_number']}/{session['total_pages']} (chunk id {ids[0]})")
+    _log(session, f"Saved page {chunk['page_number']}/{session['total_pages']} (chunk id {ids[0]})")
 
     return _advance(session_id, session)
 
@@ -191,8 +212,8 @@ def skip(session_id: str) -> dict:
             "No page is currently awaiting review for this session - if the "
             "last request failed, call retry() instead of skip() again.")
 
-    _log(session_id, f"Skipped page {session['pending']['page_number']}/"
-                      f"{session['total_pages']} (not saved)")
+    _log(session, f"Skipped page {session['pending']['page_number']}/"
+                  f"{session['total_pages']} (not saved)")
     session["pending"] = None
     return _advance(session_id, session)
 
@@ -213,10 +234,12 @@ def cancel(session_id: str) -> dict:
     """Ends the session without converting or saving anything further.
     Pages already approved before cancelling stay in the database."""
     session = _get_session(session_id)
-    _log(session_id, f"Cancelled after page {session['current_index'] + 1}/"
-                      f"{session['total_pages']} ({len(session['saved_chunk_ids'])} page(s) saved)")
+    _log(session, f"Cancelled after page {session['current_index'] + 1}/"
+                  f"{session['total_pages']} ({len(session['saved_chunk_ids'])} page(s) saved)")
+    log = session["log"]
     _cleanup(session_id, session)
     return {
         "total_saved": len(session["saved_chunk_ids"]),
         "category": session["category"] or "Uncategorized",
+        "log": log,
     }

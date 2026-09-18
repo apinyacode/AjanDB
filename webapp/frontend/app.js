@@ -106,6 +106,7 @@ document.getElementById("upload-btn").addEventListener("click", async () => {
   if (keys.openai_api_key) formData.append("openai_api_key", keys.openai_api_key);
 
   chunksEl.innerHTML = "";
+  renderConsole([]);
   const uploadBtn = document.getElementById("upload-btn");
   uploadBtn.disabled = true;
   const startedAt = Date.now();
@@ -118,7 +119,10 @@ document.getElementById("upload-btn").addEventListener("click", async () => {
     // Conversion runs in the background and can take a long time for
     // scanned PDFs (real OCR, not instant) - poll for the result instead of
     // waiting on one long-lived request, which tunnels/proxies tend to cut
-    // off after a few minutes.
+    // off after a few minutes. Each poll also carries the log lines
+    // accumulated so far (page 1 converting, page 2 converting, ... saved),
+    // so the console below fills in live instead of only showing a result
+    // at the very end.
     while (true) {
       const elapsed = Math.round((Date.now() - startedAt) / 1000);
       status.textContent = engine === "vision"
@@ -129,6 +133,7 @@ document.getElementById("upload-btn").addEventListener("click", async () => {
       const pollRes = await fetch(`/api/upload/${data.job_id}`);
       const pollData = await pollRes.json();
       if (!pollRes.ok) throw new Error(pollData.detail || "Conversion failed");
+      renderConsole(pollData.log);
       if (pollData.status === "processing") continue;
 
       const flagged = pollData.chunks.filter((c) => c.needs_review).length;
@@ -145,6 +150,18 @@ document.getElementById("upload-btn").addEventListener("click", async () => {
     uploadBtn.disabled = false;
   }
 });
+
+function renderConsole(lines) {
+  const el = document.getElementById("upload-console");
+  if (!lines || !lines.length) {
+    el.classList.add("hidden");
+    el.textContent = "";
+    return;
+  }
+  el.classList.remove("hidden");
+  el.textContent = lines.join("\n");
+  el.scrollTop = el.scrollHeight;
+}
 
 function renderChunks(container, chunks) {
   container.innerHTML = "";
@@ -200,6 +217,8 @@ async function startReview(file) {
   if (keys.openai_api_key) formData.append("openai_api_key", keys.openai_api_key);
 
   status.textContent = "Converting page 1…";
+  document.getElementById("upload-chunks").innerHTML = "";
+  renderConsole([]);
   setReviewControlsEnabled(false);
   try {
     const res = await fetch("/api/review/start", { method: "POST", body: formData });
@@ -208,7 +227,7 @@ async function startReview(file) {
     reviewSessionId = data.session_id;
     reviewTotalPages = data.total_pages;
     status.textContent = "";
-    document.getElementById("upload-chunks").innerHTML = "";
+    renderConsole(data.log);
     showReviewPage(data.page);
   } catch (err) {
     status.textContent = `Error: ${err.message}`;
@@ -252,6 +271,7 @@ async function reviewAction(path, body) {
     });
     const data = await res.json();
     if (!res.ok) throw new Error(data.detail || "Request failed");
+    renderConsole(data.log);
     if (data.done) {
       endReviewSession(
         `Review complete: ${data.total_saved} page(s) saved, category "${escapeHtml(data.category)}".`);
@@ -280,6 +300,7 @@ reviewCancelBtn.addEventListener("click", async () => {
   try {
     const res = await fetch(`/api/review/${reviewSessionId}/cancel`, { method: "POST" });
     const data = await res.json();
+    renderConsole(data.log);
     endReviewSession(`Review cancelled: ${data.total_saved} page(s) already saved.`);
   } catch (err) {
     endReviewSession(`Review cancelled (with an error checking final state: ${err.message}).`);

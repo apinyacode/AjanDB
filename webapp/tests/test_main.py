@@ -51,6 +51,39 @@ def test_upload_and_search_roundtrip(tmp_path, monkeypatch):
     assert any(r["id"] == chunk["id"] for r in results)
 
 
+def test_upload_job_log_reports_per_page_progress(tmp_path, monkeypatch):
+    client = _client(tmp_path, monkeypatch)
+
+    resp = client.post(
+        "/api/upload",
+        files={"file": ("book.pdf", _sample_pdf_bytes(), "application/pdf")},
+        data={"langs": "eng+tha"},
+    )
+    job_id = resp.json()["job_id"]
+
+    # poll at least once while still processing, to check the "processing"
+    # branch also carries whatever log lines exist so far
+    import time
+    seen_processing = False
+    deadline = time.time() + 10
+    while time.time() < deadline:
+        poll = client.get(f"/api/upload/{job_id}")
+        body = poll.json()
+        assert "log" in body
+        if body.get("status") == "processing":
+            seen_processing = True
+        if body.get("status") == "done":
+            break
+        time.sleep(0.02)
+
+    assert body["status"] == "done"
+    assert body["log"][0] == "Starting: book.pdf (engine=classical, provider=default)"
+    assert "Converting page 1/3..." in body["log"]
+    assert "Converting page 2/3..." in body["log"]
+    assert "Converting page 3/3..." in body["log"]
+    assert body["log"][-1] == "Done: saved 3 chunk(s), category 'Uncategorized'"
+
+
 def test_upload_rejects_unsupported_extension(tmp_path, monkeypatch):
     # This is checked before a job is even created, so it's still a plain
     # synchronous 400 on the POST itself - no polling involved.

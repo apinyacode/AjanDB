@@ -38,6 +38,11 @@ def test_start_converts_page_one_and_saves_nothing_yet(tmp_path):
     assert page["page_number"] == 1
     assert "Field Visit Notes" in page["markdown"]
     assert page["image_base64"]
+    assert result["log"] == [
+        "Started: book.pdf (3 page(s), engine=classical)",
+        "Converting page 1/3...",
+        "Page 1/3 ready for review",
+    ]
 
     conn = db.get_connection()
     try:
@@ -53,6 +58,11 @@ def test_approve_saves_immediately_and_returns_next_page(tmp_path):
     assert result["done"] is False
     assert result["page"]["page_number"] == 2
     assert result["total_saved"] == 1
+    assert result["log"][-3:] == [
+        "Saved page 1/3 (chunk id 1)",
+        "Converting page 2/3...",
+        "Page 2/3 ready for review",
+    ]
 
     conn = db.get_connection()
     try:
@@ -84,6 +94,7 @@ def test_skip_advances_without_saving(tmp_path):
     assert result["done"] is False
     assert result["page"]["page_number"] == 2
     assert result["total_saved"] == 0
+    assert "Skipped page 1/3 (not saved)" in result["log"]
 
     conn = db.get_connection()
     try:
@@ -104,6 +115,7 @@ def test_completes_after_last_page_and_cleans_up_temp_file(tmp_path):
     assert result["done"] is True
     assert result["total_saved"] == 3
     assert result["category"] == "Uncategorized"  # no API key in the test environment
+    assert result["log"][-1] == "Finished: 3 page(s) saved"
     assert not os.path.exists(session_pdf)
     with pytest.raises(KeyError):
         review._get_session(session_id)
@@ -159,12 +171,24 @@ def test_retry_recovers_from_a_failed_next_page_conversion(tmp_path, monkeypatch
     finally:
         conn.close()
 
+    # the failure itself is recorded in the session's log even though
+    # approve() raised rather than returning a response
+    failed_log = review._get_session(session_id)["log"]
+    assert failed_log[-2:] == [
+        "Converting page 2/3...",
+        "ERROR converting page 2/3: simulated OCR failure",
+    ]
+
     with pytest.raises(RuntimeError):
         review.approve(session_id)  # nothing pending - must not re-save or skip
 
     result = review.retry(session_id)
     assert result["done"] is False
     assert result["page"]["page_number"] == 2
+    assert result["log"][-2:] == [
+        "Converting page 2/3...",
+        "Page 2/3 ready for review",
+    ]
 
 
 def test_retry_refuses_when_a_page_is_already_pending(tmp_path):
@@ -182,6 +206,7 @@ def test_cancel_keeps_already_saved_pages_and_cleans_up(tmp_path):
     result = review.cancel(session_id)
 
     assert result["total_saved"] == 1
+    assert result["log"][-1] == "Cancelled after page 2/3 (1 page(s) saved)"
     assert not os.path.exists(session_pdf)
     with pytest.raises(KeyError):
         review._get_session(session_id)

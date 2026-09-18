@@ -24,10 +24,10 @@ as searchable markdown, and compiling a book from whatever matches a topic.
   many-minute OCR job never depends on one HTTP connection staying alive
   the whole time (real books can take that long; tunnels and browsers tend
   to give up on a single long-lived request well before that). Progress
-  (which page is converting, when it's saved, any error) prints to the
-  server's own console/log as it happens - watch the terminal running
-  `deploy.sh` (or `/tmp/ajandb_uvicorn.log`) during a long conversion to
-  see it's actually working rather than hung.
+  (page 1 converting, page 2 converting, ... saved) prints to the server's
+  own console/log as it happens, **and** shows live in a small terminal-style
+  console under the upload button in the page itself - no need to check the
+  server's log just to see it isn't hung.
 
   **Review each page before saving** - a checkbox next to the upload
   button, PDF only. Instead of converting the whole file up front and
@@ -40,9 +40,11 @@ as searchable markdown, and compiling a book from whatever matches a topic.
   (one `INSERT` per page, not a batch at the end), so closing the tab or
   hitting **Cancel review** partway through a long book keeps everything
   approved so far - already in the database and searchable - and only
-  costs the pages not yet reviewed. If converting a page fails (e.g. a
-  transient vision-LLM API error), a **Retry this page** button appears -
-  it re-attempts only that page, never re-saving or silently skipping one
+  costs the pages not yet reviewed. The same in-page console tracks this
+  flow's progress too (converting page N, ready for review, saved/skipped).
+  If converting a page fails (e.g. a transient vision-LLM API error), a
+  **Retry this page** button appears - it re-attempts only that page, never
+  re-saving or silently skipping one
   that already succeeded.
 - **Data Search** — full-text keyword search (SQLite FTS5) over every stored
   chunk, returning matches with their filename, page number, category,
@@ -155,7 +157,7 @@ the server-side default provider when the frontend doesn't specify one.
 python3 -m pytest tests/ -v
 ```
 
-125 tests total (42 in the pipeline, 83 here) covering the SQLite/FTS5 layer
+126 tests total (42 in the pipeline, 84 here) covering the SQLite/FTS5 layer
 (including confidence/needs_review/category columns), chunking (per-page for
 PDFs, character-budget for plain text), category suggestion (mocked model
 calls, graceful no-key fallback), the book compiler's retrieval + error

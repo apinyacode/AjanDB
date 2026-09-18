@@ -55,6 +55,13 @@ def _resolve_client_key(provider: str | None, anthropic_key: str | None,
 _jobs: dict[str, dict] = {}
 _jobs_lock = threading.Lock()
 
+# Log lines per job, kept separate from `_jobs` (which _set_job overwrites
+# wholesale on every status change) so the running "converting / saved"
+# history survives from "processing" through to "done"/"error" - the
+# frontend polls this alongside status to render a live console instead of
+# just a single current-status line.
+_job_logs: dict[str, list[str]] = {}
+
 
 def _set_job(job_id: str, **fields):
     with _jobs_lock:
@@ -63,6 +70,8 @@ def _set_job(job_id: str, **fields):
 
 def _upload_log(job_id: str, message: str):
     print(f"[upload {job_id[:8]}] {message}", flush=True)
+    with _jobs_lock:
+        _job_logs.setdefault(job_id, []).append(message)
 
 
 def _run_upload_job(job_id: str, tmp_path: str, filename: str, ext: str,
@@ -73,7 +82,7 @@ def _run_upload_job(job_id: str, tmp_path: str, filename: str, ext: str,
     _upload_log(job_id, f"Starting: {filename} (engine={engine}, provider={provider or 'default'})")
 
     def _progress(page_number: int, total_pages: int):
-        _upload_log(job_id, f"{filename}: page {page_number + 1}/{total_pages}")
+        _upload_log(job_id, f"Converting page {page_number + 1}/{total_pages}...")
 
     try:
         chunks = convert.convert_to_markdown(
@@ -177,13 +186,14 @@ async def upload(
 def upload_status(job_id: str):
     with _jobs_lock:
         job = _jobs.get(job_id)
+        log = list(_job_logs.get(job_id, []))
     if not job:
         raise HTTPException(404, "Unknown upload job")
     if job["status"] == "processing":
-        return {"status": "processing"}
+        return {"status": "processing", "log": log}
     if job["status"] == "error":
         raise HTTPException(job["code"], job["detail"])
-    return {"status": "done", **job["result"]}
+    return {"status": "done", "log": log, **job["result"]}
 
 
 class ReviewApproveRequest(BaseModel):
