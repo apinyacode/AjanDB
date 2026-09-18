@@ -11,7 +11,7 @@ def test_text_to_markdown_returns_single_chunk_for_short_file(tmp_path):
     chunks = convert.text_to_markdown(str(p))
     assert len(chunks) == 1
     assert chunks[0] == {"page_number": 1, "markdown": "hello world",
-                          "confidence": None, "needs_review": False}
+                          "confidence": None, "needs_review": False, "flagged_snippets": []}
 
 
 def test_text_to_markdown_splits_long_file_into_multiple_chunks(tmp_path):
@@ -29,7 +29,7 @@ def test_convert_to_markdown_dispatches_txt_and_md(tmp_path):
     p.write_text("# Title")
     chunks = convert.convert_to_markdown(str(p), "note.md")
     assert chunks == [{"page_number": 1, "markdown": "# Title",
-                        "confidence": None, "needs_review": False}]
+                        "confidence": None, "needs_review": False, "flagged_snippets": []}]
 
 
 def test_convert_to_markdown_raises_on_unsupported_extension(tmp_path):
@@ -120,6 +120,41 @@ def test_items_to_chunks_page_with_only_an_image_reports_it_not_a_placeholder():
     assert "No extractable text" not in chunks[0]["markdown"]
 
 
+def test_items_to_chunks_flags_lines_with_confidence_below_100():
+    items = [
+        {"kind": "heading", "page": 0},
+        {"kind": "text", "lang": "en", "text": "Perfect native text", "confidence": 100.0},
+        {"kind": "text", "lang": "en", "text": "guessed ocr line", "confidence": 92.0},
+    ]
+    chunks = convert.items_to_chunks(items)
+    assert chunks[0]["flagged_snippets"] == ["guessed ocr line"]
+    # every flagged snippet must be an exact substring of the chunk's own
+    # markdown, so the frontend can find and highlight it there
+    assert chunks[0]["flagged_snippets"][0] in chunks[0]["markdown"]
+
+
+def test_items_to_chunks_no_flagged_snippets_when_everything_is_confident():
+    items = [
+        {"kind": "heading", "page": 0},
+        {"kind": "text", "lang": "en", "text": "Native text", "confidence": 100.0},
+    ]
+    chunks = convert.items_to_chunks(items)
+    assert chunks[0]["flagged_snippets"] == []
+
+
+def test_items_to_chunks_flags_the_not_shown_as_text_summary_line():
+    items = [
+        {"kind": "heading", "page": 0},
+        {"kind": "text", "lang": "en", "text": "Clean text", "confidence": 100.0},
+        {"kind": "handwriting", "image_bytes": b""},
+    ]
+    chunks = convert.items_to_chunks(items)
+    assert len(chunks[0]["flagged_snippets"]) == 1
+    summary_snippet = chunks[0]["flagged_snippets"][0]
+    assert "Not shown as text" in summary_snippet
+    assert summary_snippet in chunks[0]["markdown"]
+
+
 def test_pdf_to_markdown_extracts_text_as_per_page_chunks(tmp_path):
     # reuses the synthetic fixture generator from pdf_to_docx_pipeline,
     # reachable because convert.py adds that package to sys.path.
@@ -133,10 +168,12 @@ def test_pdf_to_markdown_extracts_text_as_per_page_chunks(tmp_path):
     assert "Field Visit Notes" in chunks[0]["markdown"]
     assert chunks[0]["confidence"] == 100.0  # born-digital text, not OCR
     assert chunks[0]["needs_review"] is False
+    assert chunks[0]["flagged_snippets"] == []  # nothing guessed on this page
 
     page3 = chunks[2]
     assert "Not shown as text" in page3["markdown"]  # the simulated handwriting
     assert page3["needs_review"] is True
+    assert any("Not shown as text" in s for s in page3["flagged_snippets"])
 
 
 def test_pdf_to_markdown_reports_progress_per_page(tmp_path):

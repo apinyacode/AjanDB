@@ -84,6 +84,10 @@ def _convert_one_page(session: dict, page_index: int) -> dict:
         "markdown": chunk["markdown"],
         "confidence": chunk["confidence"],
         "needs_review": chunk["needs_review"],
+        # exact substrings of `markdown` that dragged confidence below 100 -
+        # the frontend highlights them so a human reviewing the page knows
+        # exactly what to check first instead of re-reading the whole thing.
+        "flagged_snippets": chunk.get("flagged_snippets", []),
         "image_base64": base64.b64encode(png_bytes).decode("ascii"),
     }
 

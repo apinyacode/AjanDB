@@ -340,12 +340,54 @@ mark {
   background: rgba(128, 128, 128, 0.08);
 }
 
-#review-markdown {
-  width: 100%;
+/* Overlay trick: an aria-hidden div sits exactly behind the textarea,
+   sharing its font/padding/border/box-sizing so text wraps identically in
+   both - it renders the same text with <mark> around low-confidence spans
+   (transparent text, coloured background only), while the textarea on top
+   stays fully editable with the real text visible through its transparent
+   background. Editing invalidates a snippet's exact match automatically -
+   fix a flagged line and its highlight disappears on the next keystroke. */
+.markdown-editor {
+  position: relative;
   height: 65vh;
-  resize: vertical;
+}
+
+.markdown-editor .markdown-highlight,
+.markdown-editor textarea {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  padding: 0.5rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
   font-family: ui-monospace, monospace;
   font-size: 0.85rem;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-wrap: break-word;
+  overflow: auto;
+}
+
+.markdown-highlight {
+  color: transparent;
+  background: transparent;
+  border-color: transparent;
+  pointer-events: none;
+  overflow: hidden;
+}
+
+.markdown-highlight mark {
+  background: #ffb300;
+  color: transparent;
+  border-radius: 2px;
+}
+
+#review-markdown {
+  resize: none;
+  background: transparent;
+  color: var(--fg);
 }
 
 #review-panel .row {

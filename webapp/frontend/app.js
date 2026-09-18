@@ -164,6 +164,33 @@ function renderConsole(lines) {
   el.scrollTop = el.scrollHeight;
 }
 
+// Renders `text` as HTML with every occurrence of any `flaggedSnippets`
+// entry wrapped in <mark> - shared between the read-only chunk-card preview
+// below and the review-mode editable-textarea overlay further down. Longest
+// snippets are matched first so one snippet that happens to contain a
+// shorter one (e.g. a paragraph containing an already-flagged sentence)
+// doesn't get split into a smaller, misleading highlight.
+function renderHighlightedMarkdown(text, flaggedSnippets) {
+  if (!flaggedSnippets || !flaggedSnippets.length) return escapeHtml(text);
+  const escapedForRegex = flaggedSnippets
+    .filter((s) => s)
+    .sort((a, b) => b.length - a.length)
+    .map((s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+  if (!escapedForRegex.length) return escapeHtml(text);
+
+  const re = new RegExp(escapedForRegex.join("|"), "g");
+  let html = "";
+  let lastIndex = 0;
+  let match;
+  while ((match = re.exec(text)) !== null) {
+    html += escapeHtml(text.slice(lastIndex, match.index));
+    html += `<mark>${escapeHtml(match[0])}</mark>`;
+    lastIndex = match.index + match[0].length;
+  }
+  html += escapeHtml(text.slice(lastIndex));
+  return html;
+}
+
 function renderChunks(container, chunks) {
   container.innerHTML = "";
   chunks.forEach((chunk) => {
@@ -177,7 +204,7 @@ function renderChunks(container, chunks) {
       `<span>Confidence: ${confidenceText}</span>` +
       (chunk.needs_review ? `<span class="badge">Needs review</span>` : "") +
       `</div>` +
-      `<pre class="markdown-preview">${escapeHtml(chunk.markdown)}</pre>`;
+      `<pre class="markdown-preview">${renderHighlightedMarkdown(chunk.markdown, chunk.flagged_snippets)}</pre>`;
     container.appendChild(card);
   });
 }
@@ -189,6 +216,8 @@ const reviewProgress = document.getElementById("review-progress");
 const reviewBadges = document.getElementById("review-badges");
 const reviewImage = document.getElementById("review-image");
 const reviewMarkdown = document.getElementById("review-markdown");
+const reviewMarkdownHighlight = document.getElementById("review-markdown-highlight");
+const reviewHighlightHint = document.getElementById("review-highlight-hint");
 const reviewApproveBtn = document.getElementById("review-approve-btn");
 const reviewSkipBtn = document.getElementById("review-skip-btn");
 const reviewRetryBtn = document.getElementById("review-retry-btn");
@@ -197,6 +226,25 @@ const reviewStatus = document.getElementById("review-status");
 
 let reviewSessionId = null;
 let reviewTotalPages = 0;
+let reviewFlaggedSnippets = [];
+
+// Re-renders the highlight overlay from the textarea's *current* value, so
+// editing a flagged line makes its highlight disappear the moment the fix
+// no longer matches the original flagged text - a natural "you fixed it"
+// signal without any extra bookkeeping.
+function updateReviewHighlight() {
+  const text = reviewMarkdown.value;
+  reviewMarkdownHighlight.innerHTML = renderHighlightedMarkdown(text, reviewFlaggedSnippets) + "\n";
+  const stillFlagged = reviewFlaggedSnippets.filter((s) => s && text.includes(s)).length;
+  reviewHighlightHint.textContent = stillFlagged
+    ? `${stillFlagged} highlighted section(s) below have lower-confidence or untranscribed text - check those first.`
+    : "";
+}
+reviewMarkdown.addEventListener("input", updateReviewHighlight);
+reviewMarkdown.addEventListener("scroll", () => {
+  reviewMarkdownHighlight.scrollTop = reviewMarkdown.scrollTop;
+  reviewMarkdownHighlight.scrollLeft = reviewMarkdown.scrollLeft;
+});
 
 function setReviewControlsEnabled(enabled) {
   document.getElementById("file-input").disabled = !enabled;
@@ -249,6 +297,8 @@ function showReviewPage(page) {
     (page.needs_review ? ` <span class="badge">Needs review</span>` : "");
   reviewImage.src = `data:image/png;base64,${page.image_base64}`;
   reviewMarkdown.value = page.markdown;
+  reviewFlaggedSnippets = page.flagged_snippets || [];
+  updateReviewHighlight();
   reviewStatus.textContent = "";
 }
 

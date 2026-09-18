@@ -34,18 +34,27 @@ as searchable markdown, and compiling a book from whatever matches a topic.
   flagging uncertain pages afterwards, this converts and shows one page at
   a time: the scanned page image on the left, the converted markdown in an
   editable textarea on the right, with its confidence score and review
-  flag. Nothing is written to the database until you click **Approve &
-  Save** - fix a transcription mistake before it's stored, or **Skip** a
-  page you don't want kept at all. Each approved page is saved immediately
-  (one `INSERT` per page, not a batch at the end), so closing the tab or
-  hitting **Cancel review** partway through a long book keeps everything
-  approved so far - already in the database and searchable - and only
-  costs the pages not yet reviewed. The same in-page console tracks this
-  flow's progress too (converting page N, ready for review, saved/skipped).
-  If converting a page fails (e.g. a transient vision-LLM API error), a
-  **Retry this page** button appears - it re-attempts only that page, never
-  re-saving or silently skipping one
-  that already succeeded.
+  flag. Every exact bit of text that dragged that page's confidence below
+  100% - a shaky OCR line, a self-doubting vision-LLM transcription, or the
+  summary note standing in for handwriting/a photo that wasn't transcribed
+  at all - is highlighted right there in the text box, so you know exactly
+  what to check first instead of re-reading the whole page; fix a
+  highlighted line and its highlight disappears the moment your edit no
+  longer matches the original flagged text. Nothing is written to the
+  database until you click **Approve & Save** - fix a transcription
+  mistake before it's stored, or **Skip** a page you don't want kept at
+  all. Each approved page is saved immediately (one `INSERT` per page, not
+  a batch at the end), so closing the tab or hitting **Cancel review**
+  partway through a long book keeps everything approved so far - already
+  in the database and searchable - and only costs the pages not yet
+  reviewed. The same in-page console tracks this flow's progress too
+  (converting page N, ready for review, saved/skipped). If converting a
+  page fails (e.g. a transient vision-LLM API error), a **Retry this
+  page** button appears - it re-attempts only that page, never re-saving
+  or silently skipping one that already succeeded. The same highlighting
+  also appears (read-only) on a freshly-completed bulk upload's chunk
+  previews below the upload button - it isn't retroactively computed for
+  chunks browsed later from the database, since that data isn't stored.
 - **Data Search** — full-text keyword search (SQLite FTS5) over every stored
   chunk, returning matches with their filename, page number, category,
   confidence, review flag, and a highlighted snippet. Below the search box,
@@ -165,11 +174,12 @@ the server-side default provider when the frontend doesn't specify one.
 python3 -m pytest tests/ -v
 ```
 
-140 tests total (42 in the pipeline, 98 here) covering the SQLite/FTS5 layer
+144 tests total (42 in the pipeline, 102 here) covering the SQLite/FTS5 layer
 (including confidence/needs_review/category columns, and the book-browsing
 queries' handling of duplicate/re-uploaded pages), chunking (per-page for
-PDFs, character-budget for plain text), category suggestion (mocked model
-calls, graceful no-key fallback), the book compiler's retrieval + error
+PDFs, character-budget for plain text, and which exact snippets get flagged
+for the review UI's highlighting), category suggestion (mocked model calls,
+graceful no-key fallback), the book compiler's retrieval + error
 handling for both providers, browser-supplied key resolution/priority, the
 background upload-job lifecycle, the page-by-page review session's state
 machine (approve/skip/retry/cancel, including recovering from a failed

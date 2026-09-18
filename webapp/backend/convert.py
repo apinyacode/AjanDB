@@ -10,9 +10,13 @@ Plain text/markdown and .docx files have no OCR step, so they're chunked by
 a rough character budget instead, with confidence left unset (nothing was
 guessed) and needs_review always False.
 
-Every chunk is a dict: {"page_number", "markdown", "confidence", "needs_review"}.
-`confidence` is 0-100 or None (not applicable - native text, no OCR involved).
-"""
+Every chunk is a dict: {"page_number", "markdown", "confidence", "needs_review",
+"flagged_snippets"}. `confidence` is 0-100 or None (not applicable - native
+text, no OCR involved). `flagged_snippets` is the list of exact substrings
+within `markdown` that dragged `confidence` below 100 (or represent content
+that wasn't transcribed at all) - the review UI highlights them so a human
+knows exactly what to double-check instead of re-reading the whole page.
+Always [] for plain text/markdown/.docx, which have nothing to guess."""
 import os
 import re
 import sys
@@ -75,7 +79,8 @@ def items_to_chunks(doc_items: list[dict]) -> list[dict]:
     so these are counted and rolled into one summary line per page instead
     of a placeholder per item."""
     chunks = []
-    state = {"page": None, "lines": [], "confidences": [], "counts": {k: 0 for k in _FLAGGED_KINDS}}
+    state = {"page": None, "lines": [], "confidences": [], "flagged_lines": [],
+             "counts": {k: 0 for k in _FLAGGED_KINDS}}
 
     def flush():
         if state["page"] is None:
@@ -83,8 +88,11 @@ def items_to_chunks(doc_items: list[dict]) -> list[dict]:
         counts = state["counts"]
         summary_parts = [f"{counts[k]} {_SUMMARY_LABELS[k]}" for k in _FLAGGED_KINDS if counts[k]]
         lines = list(state["lines"])
+        flagged_snippets = list(state["flagged_lines"])
         if summary_parts:
-            lines.append("*[Not shown as text: " + ", ".join(summary_parts) + " - see the original document]*")
+            summary_line = "*[Not shown as text: " + ", ".join(summary_parts) + " - see the original document]*"
+            lines.append(summary_line)
+            flagged_snippets.append(summary_line)
         markdown = "\n\n".join(lines).strip() or "*[No extractable text on this page]*"
 
         confidences = state["confidences"]
@@ -98,18 +106,26 @@ def items_to_chunks(doc_items: list[dict]) -> list[dict]:
             "markdown": markdown,
             "confidence": avg_confidence,
             "needs_review": needs_review,
+            "flagged_snippets": flagged_snippets,
         })
 
     for item in doc_items:
         kind = item["kind"]
         if kind == "heading":
             flush()
-            state = {"page": item["page"], "lines": [], "confidences": [], "counts": {k: 0 for k in _FLAGGED_KINDS}}
+            state = {"page": item["page"], "lines": [], "confidences": [], "flagged_lines": [],
+                      "counts": {k: 0 for k in _FLAGGED_KINDS}}
         elif kind == "text":
             text = _clean(item["text"]).strip()
+            confidence = item.get("confidence")
             if text:
                 state["lines"].append(text)
-            confidence = item.get("confidence")
+                # confidence < 100 means it was OCR'd/guessed rather than
+                # lifted straight from the PDF's own text layer (which is
+                # always tagged 100 - see pipeline/main.py's build_doc_items)
+                # - exactly the text worth a human double-checking first.
+                if confidence is not None and confidence < 100:
+                    state["flagged_lines"].append(text)
             if confidence is not None:
                 state["confidences"].append(confidence)
         elif kind in state["counts"]:
@@ -138,7 +154,8 @@ def _chunk_plain_text(text: str, max_chars: int = PLAIN_TEXT_CHUNK_CHARS) -> lis
     if not packed:
         packed = [text.strip() or "*[Empty file]*"]
     return [
-        {"page_number": i + 1, "markdown": chunk, "confidence": None, "needs_review": False}
+        {"page_number": i + 1, "markdown": chunk, "confidence": None, "needs_review": False,
+         "flagged_snippets": []}
         for i, chunk in enumerate(packed)
     ]
 

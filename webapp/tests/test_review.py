@@ -38,6 +38,7 @@ def test_start_converts_page_one_and_saves_nothing_yet(tmp_path):
     assert page["page_number"] == 1
     assert "Field Visit Notes" in page["markdown"]
     assert page["image_base64"]
+    assert page["flagged_snippets"] == []  # page 1 is all born-digital text
     assert result["log"] == [
         "Started: book.pdf (3 page(s), engine=classical)",
         "Converting page 1/3...",
@@ -119,6 +120,18 @@ def test_completes_after_last_page_and_cleans_up_temp_file(tmp_path):
     assert not os.path.exists(session_pdf)
     with pytest.raises(KeyError):
         review._get_session(session_id)
+
+
+def test_page_with_flagged_content_reports_flagged_snippets(tmp_path):
+    started = review.start(_session_pdf(tmp_path), "book.pdf", langs="eng+tha")
+    session_id = started["session_id"]
+    review.approve(session_id)  # page 1 -> page 2
+    result = review.approve(session_id)  # page 2 -> page 3 (has simulated handwriting)
+
+    page3 = result["page"]
+    assert page3["page_number"] == 3
+    assert page3["flagged_snippets"]
+    assert all(s in page3["markdown"] for s in page3["flagged_snippets"])
 
 
 def test_explicit_category_is_used_for_every_page(tmp_path):
