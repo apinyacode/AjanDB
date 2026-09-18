@@ -200,12 +200,16 @@ function renderHighlightedMarkdown(text, groups) {
 }
 
 // Same as renderHighlightedMarkdown, but also renders embedded
-// ![alt](data:image/...) syntax (see convert.py) as an actual <img> instead
-// of raw markdown text - only safe for read-only display, since it changes
-// the rendered layout and would break the review-mode overlay's need to
-// mirror the textarea's text exactly (see updateReviewHighlight).
+// ![alt](/images/<hash>.jpg) links (see convert.py) as an actual <img>
+// instead of raw markdown text - only safe for read-only display, since it
+// changes the rendered layout and would break the review-mode overlay's
+// need to mirror the textarea's text exactly (see updateReviewHighlight).
+// Also matches the old inline base64 data URI format, in case the database
+// still has rows saved before that changed.
+const EMBEDDED_IMAGE_LINK_RE = /!\[([^\]]*)\]\((\/images\/[^)]+|data:image\/[a-zA-Z0-9.+-]+;base64,[A-Za-z0-9+/=]+)\)/g;
+
 function renderMarkdownWithImages(text, groups) {
-  const re = /!\[([^\]]*)\]\((data:image\/[a-zA-Z0-9.+-]+;base64,[A-Za-z0-9+/=]+)\)/g;
+  const re = new RegExp(EMBEDDED_IMAGE_LINK_RE);
   let html = "";
   let lastIndex = 0;
   let match;
@@ -289,7 +293,7 @@ reviewMarkdown.addEventListener("scroll", () => {
 // often contains - a whole paragraph highlighted at a time is a much more
 // robust "follow along" signal than a jittery per-word one. ---
 const reviewReadAloudBtn = document.getElementById("review-read-aloud-btn");
-const _EMBEDDED_IMAGE_LINE_RE = /^!\[[^\]]*\]\(data:image\/[a-zA-Z0-9.+-]+;base64,[A-Za-z0-9+/=]+\)$/;
+const _EMBEDDED_IMAGE_LINE_RE = /^!\[[^\]]*\]\((\/images\/[^)]+|data:image\/[a-zA-Z0-9.+-]+;base64,[A-Za-z0-9+/=]+)\)$/;
 
 let reviewSpeakingSegment = null;
 let ttsSegments = [];

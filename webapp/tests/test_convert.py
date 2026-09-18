@@ -1,8 +1,21 @@
 import os
 
+import cv2
+import numpy as np
 import pytest
 
 from backend import convert
+
+
+def _real_png_bytes(color=(0, 0, 255)):
+    """A tiny real, decodable image - fake placeholder bytes like b"fake"
+    no longer work now that convert.py actually decodes/re-encodes images
+    (cv2.imdecode legitimately rejects garbage input, unlike the old
+    base64-wrap-anything approach)."""
+    img = np.full((4, 4, 3), color, dtype="uint8")
+    ok, buf = cv2.imencode(".png", img)
+    assert ok
+    return buf.tobytes()
 
 
 def test_text_to_markdown_returns_single_chunk_for_short_file(tmp_path):
@@ -84,18 +97,16 @@ def test_items_to_chunks_flags_low_confidence_page_for_review():
     assert chunks[0]["needs_review"] is True
 
 
-_FAKE_IMAGE_BYTES = b"fake-png-bytes-for-testing"
-
-
 def test_items_to_chunks_flags_handwriting_and_uncertain_regardless_of_confidence():
     items = [
         {"kind": "heading", "page": 0},
         {"kind": "text", "lang": "en", "text": "Clean high-confidence text", "confidence": 99.0},
-        {"kind": "handwriting", "image_bytes": _FAKE_IMAGE_BYTES},
+        {"kind": "handwriting", "image_bytes": _real_png_bytes()},
     ]
     chunks = convert.items_to_chunks(items)
     assert chunks[0]["needs_review"] is True
-    assert "![handwriting](data:image/png;base64," in chunks[0]["markdown"]
+    assert "![handwriting](/images/" in chunks[0]["markdown"]
+    assert chunks[0]["markdown"].endswith(".jpg)")
     assert chunks[0]["flagged_snippets"]  # the embedded image itself is flagged
 
 
@@ -103,11 +114,11 @@ def test_items_to_chunks_plain_image_does_not_trigger_review():
     items = [
         {"kind": "heading", "page": 0},
         {"kind": "text", "lang": "en", "text": "Clean text", "confidence": 100.0},
-        {"kind": "image", "image_bytes": _FAKE_IMAGE_BYTES},
+        {"kind": "image", "image_bytes": _real_png_bytes()},
     ]
     chunks = convert.items_to_chunks(items)
     assert chunks[0]["needs_review"] is False
-    assert "![image](data:image/png;base64," in chunks[0]["markdown"]
+    assert "![image](/images/" in chunks[0]["markdown"]
     assert chunks[0]["flagged_snippets"] == []  # a plain photo isn't flagged for review
 
 
@@ -119,22 +130,42 @@ def test_items_to_chunks_completely_blank_page_gets_placeholder():
 
 
 def test_items_to_chunks_page_with_only_an_image_reports_it_not_a_placeholder():
-    items = [{"kind": "heading", "page": 0}, {"kind": "image", "image_bytes": _FAKE_IMAGE_BYTES}]
+    items = [{"kind": "heading", "page": 0}, {"kind": "image", "image_bytes": _real_png_bytes()}]
     chunks = convert.items_to_chunks(items)
-    assert "![image](data:image/png;base64," in chunks[0]["markdown"]
+    assert "![image](/images/" in chunks[0]["markdown"]
     assert "No extractable text" not in chunks[0]["markdown"]
 
 
-def test_items_to_chunks_embeds_image_with_correct_mime_type_from_image_ext():
-    items = [{"kind": "heading", "page": 0},
-             {"kind": "image", "image_bytes": _FAKE_IMAGE_BYTES, "image_ext": "jpeg"}]
+def test_items_to_chunks_writes_a_real_jpg_file_that_reuses_on_same_bytes():
+    image_bytes = _real_png_bytes()
+    items = [{"kind": "heading", "page": 0}, {"kind": "image", "image_bytes": image_bytes}]
+
     chunks = convert.items_to_chunks(items)
-    assert "data:image/jpeg;base64," in chunks[0]["markdown"]
+    filename = chunks[0]["markdown"].split("(/images/")[1].rstrip(")")
+    path = os.path.join(convert.IMAGES_DIR, filename)
+    assert os.path.exists(path)
+    assert filename.endswith(".jpg")
+    mtime_first = os.path.getmtime(path)
+
+    # a second page with the exact same image bytes should reuse the file,
+    # not write a duplicate
+    chunks2 = convert.items_to_chunks(items)
+    filename2 = chunks2[0]["markdown"].split("(/images/")[1].rstrip(")")
+    assert filename2 == filename
+    assert os.path.getmtime(path) == mtime_first
+
+
+def test_items_to_chunks_skips_embedding_when_image_bytes_undecodable():
+    # Defensive case: if a doc_item's bytes genuinely aren't a real image,
+    # don't emit a broken image reference - just drop it, still counted
+    # for needs_review.
+    items = [{"kind": "heading", "page": 0}, {"kind": "handwriting", "image_bytes": b"not an image"}]
+    chunks = convert.items_to_chunks(items)
+    assert "![" not in chunks[0]["markdown"]
+    assert chunks[0]["needs_review"] is True
 
 
 def test_items_to_chunks_skips_embedding_when_image_bytes_missing():
-    # Defensive case: if a doc_item genuinely has no bytes, don't emit a
-    # broken image reference - just drop it, still counted for needs_review.
     items = [{"kind": "heading", "page": 0}, {"kind": "handwriting", "image_bytes": b""}]
     chunks = convert.items_to_chunks(items)
     assert "![" not in chunks[0]["markdown"]
@@ -167,7 +198,7 @@ def test_items_to_chunks_embeds_images_in_reading_order_between_text():
     items = [
         {"kind": "heading", "page": 0},
         {"kind": "text", "lang": "en", "text": "Before the image", "confidence": 100.0},
-        {"kind": "image", "image_bytes": _FAKE_IMAGE_BYTES},
+        {"kind": "image", "image_bytes": _real_png_bytes()},
         {"kind": "text", "lang": "en", "text": "After the image", "confidence": 100.0},
     ]
     chunks = convert.items_to_chunks(items)
@@ -195,8 +226,8 @@ def test_pdf_to_markdown_extracts_text_as_per_page_chunks(tmp_path):
     # simulated handwritten note (kind="handwriting", flagged) - both must
     # be embedded as actual images rather than a placeholder note.
     assert page3["markdown"].count("![") == 2
-    assert "![image](data:image/png;base64," in page3["markdown"]
-    assert "![handwriting](data:image/png;base64," in page3["markdown"]
+    assert "![image](/images/" in page3["markdown"]
+    assert "![handwriting](/images/" in page3["markdown"]
     assert page3["needs_review"] is True
     assert any(s.startswith("![handwriting]") for s in page3["flagged_snippets"])
     assert not any(s.startswith("![image]") for s in page3["flagged_snippets"])

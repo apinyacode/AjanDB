@@ -403,6 +403,38 @@ def test_review_unknown_session_returns_404(tmp_path, monkeypatch):
     assert client.post("/api/review/not-a-real-session/retry").status_code == 404
 
 
+# --- Serving extracted images (/images/*) ---
+
+def test_get_image_returns_404_for_unknown_file(tmp_path, monkeypatch):
+    client = _client(tmp_path, monkeypatch)
+    assert client.get("/images/does-not-exist.jpg").status_code == 404
+
+
+def test_get_image_rejects_path_traversal(tmp_path, monkeypatch):
+    client = _client(tmp_path, monkeypatch)
+    resp = client.get("/images/..%2F..%2Fbackend%2Fmain.py")
+    assert resp.status_code == 404
+    assert "def get_image" not in resp.text
+
+
+def test_get_image_serves_a_real_embedded_image(tmp_path, monkeypatch):
+    client = _client(tmp_path, monkeypatch)
+    _upload_and_wait(
+        client,
+        files={"file": ("book.pdf", _sample_pdf_bytes(), "application/pdf")},
+        data={"langs": "eng+tha"},
+    )
+    book_id = client.get("/api/books").json()[0]["id"]
+    chunks = client.get(f"/api/books/{book_id}").json()["chunks"]
+    page3_markdown = next(c["markdown"] for c in chunks if c["page_number"] == 3)
+    image_path = page3_markdown.split("](")[1].split(")")[0]
+
+    resp = client.get(image_path)
+    assert resp.status_code == 200
+    assert resp.headers["content-type"] == "image/jpeg"
+    assert resp.content[:2] == b"\xff\xd8"  # JPEG magic bytes
+
+
 # --- Browsing and exporting books (/api/books*) ---
 
 def test_list_books_returns_empty_list_when_nothing_uploaded(tmp_path, monkeypatch):
@@ -481,3 +513,30 @@ def test_export_book_encodes_non_ascii_filename(tmp_path, monkeypatch):
     resp = client.get(f"/api/books/{book_id}/export")
     assert resp.status_code == 200, resp.text
     assert "filename*=UTF-8''" in resp.headers["content-disposition"]
+
+
+def test_export_book_rewrites_image_links_to_absolute_urls(tmp_path, monkeypatch):
+    # page 3 of the sample PDF has an embedded photo and simulated
+    # handwriting - both saved as real .jpg files and referenced by a
+    # host-relative /images/<hash>.jpg link in the stored markdown, which
+    # only resolves correctly while browsing the app itself. Exporting
+    # rewrites them to a full URL so the downloaded file's images still
+    # work if opened elsewhere while this server keeps running.
+    client = _client(tmp_path, monkeypatch)
+    _upload_and_wait(
+        client,
+        files={"file": ("book.pdf", _sample_pdf_bytes(), "application/pdf")},
+        data={"langs": "eng+tha"},
+    )
+    book_id = client.get("/api/books").json()[0]["id"]
+
+    resp = client.get(f"/api/books/{book_id}/export")
+    assert resp.status_code == 200, resp.text
+    assert "](/images/" not in resp.text  # no bare host-relative links left
+    assert "](http://testserver/images/" in resp.text
+
+    # and the image is actually fetchable at that URL
+    image_url = resp.text.split("](http://testserver")[1].split(")")[0]
+    image_resp = client.get(image_url)
+    assert image_resp.status_code == 200
+    assert image_resp.headers["content-type"] == "image/jpeg"

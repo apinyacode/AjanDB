@@ -12,10 +12,12 @@ import re
 from anthropic import Anthropic
 from openai import OpenAI
 
-# Embedded images (see convert.py) are base64 data URIs that can run to tens
-# of KB - left in, one could eat the whole excerpt budget below and leave
-# the model nothing but base64 noise to guess a category from.
-_IMAGE_MARKDOWN_RE = re.compile(r"!\[([^\]]*)\]\(data:image/[^)]*\)")
+# Embedded images (see convert.py) are markdown image links to a real .jpg
+# file - meaningless to an LLM as prose, so stripped before guessing a
+# category from the excerpt. (Matches both the current /images/<hash>.jpg
+# links and the old inline base64 data URIs, in case a database still has
+# rows saved before that changed.)
+_IMAGE_MARKDOWN_RE = re.compile(r"!\[([^\]]*)\]\((?:/images/[^)]*|data:image/[^)]*)\)")
 
 DEFAULT_PROVIDER = "anthropic"
 

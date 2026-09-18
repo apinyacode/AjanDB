@@ -19,19 +19,22 @@ knows exactly what to double-check instead of re-reading the whole page.
 Always [] for plain text/markdown/.docx, which have nothing to guess.
 
 Images, handwriting, and low-confidence OCR regions are never sent through
-text extraction - they're embedded directly in the markdown as
-`![alt](data:image/...;base64,...)`, in reading order, so the actual
-picture is right there to look at instead of a "see the original document"
-placeholder note. This does mean a page with several images can make its
-markdown (and therefore its row in the database) noticeably large - fine
-for a personal library, worth knowing if you're digitising something
-photo-heavy."""
-import base64
+text extraction - each is saved as a real .jpg file under data/images/ and
+referenced from the markdown as `![alt](/images/<hash>.jpg)`, in reading
+order, so the actual picture is right there to look at (in any read-only
+view, and as a short link rather than a wall of text in the editable
+review textarea) instead of a "see the original document" placeholder
+note. Saved once per distinct image (named by a hash of its original
+bytes) - re-encountering the same image, e.g. from a re-upload, reuses the
+existing file rather than writing a duplicate."""
+import hashlib
 import os
 import re
 import sys
 import tempfile
 
+import cv2
+import numpy as np
 import pymupdf as fitz
 
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -73,20 +76,42 @@ _IMAGE_ALT_TEXT = {
     "handwriting": "handwriting",
     "uncertain": "low-confidence region",
 }
-_IMAGE_MIME_TYPES = {
-    "png": "image/png", "jpg": "image/jpeg", "jpeg": "image/jpeg",
-    "gif": "image/gif", "bmp": "image/bmp", "tiff": "image/tiff", "webp": "image/webp",
-}
 _FLAGGED_KINDS = ("image", "handwriting", "uncertain")
 # Of the flagged kinds, only these represent content that genuinely couldn't
 # be transcribed reliably - a plain photo isn't itself a review-worthy
 # accuracy problem or worth flagging for extra scrutiny, just worth showing.
 _REVIEW_TRIGGER_KINDS = ("handwriting", "uncertain")
 
+# Where extracted images are saved as real .jpg files, and the URL path
+# main.py serves them at (see its `/images` StaticFiles mount). A plain
+# module attribute, not baked into the function below, so tests can point
+# it at a throwaway directory via monkeypatch instead of writing into the
+# real data/ directory.
+IMAGES_DIR = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "images"
+)
+IMAGES_URL_PREFIX = "/images"
 
-def _image_to_data_uri(image_bytes: bytes, ext: str = "png") -> str:
-    mime = _IMAGE_MIME_TYPES.get((ext or "png").lower().lstrip("."), "image/png")
-    return f"data:{mime};base64,{base64.b64encode(image_bytes).decode('ascii')}"
+
+def _save_image_as_jpg(image_bytes: bytes) -> str:
+    """Decodes arbitrary image bytes (a PNG crop, a natively-embedded JPEG
+    or PNG from the PDF's own objects, ...) - format is sniffed from the
+    bytes themselves, no extension needed - and saves a JPEG copy under
+    IMAGES_DIR, named by a hash of the original bytes so re-encountering
+    the same image (e.g. re-uploading the same book) reuses the existing
+    file instead of writing a duplicate. Returns the URL path to reference
+    it from markdown. Raises ValueError if the bytes aren't a decodable
+    image."""
+    digest = hashlib.sha256(image_bytes).hexdigest()[:24]
+    filename = f"{digest}.jpg"
+    os.makedirs(IMAGES_DIR, exist_ok=True)
+    path = os.path.join(IMAGES_DIR, filename)
+    if not os.path.exists(path):
+        img = cv2.imdecode(np.frombuffer(image_bytes, dtype=np.uint8), cv2.IMREAD_COLOR)
+        if img is None:
+            raise ValueError("Could not decode image bytes")
+        cv2.imwrite(path, img, [cv2.IMWRITE_JPEG_QUALITY, 85])
+    return f"{IMAGES_URL_PREFIX}/{filename}"
 
 
 def items_to_chunks(doc_items: list[dict]) -> list[dict]:
@@ -140,8 +165,11 @@ def items_to_chunks(doc_items: list[dict]) -> list[dict]:
             state["counts"][kind] += 1
             image_bytes = item.get("image_bytes")
             if image_bytes:
-                data_uri = _image_to_data_uri(image_bytes, item.get("image_ext", "png"))
-                image_line = f"![{_IMAGE_ALT_TEXT[kind]}]({data_uri})"
+                try:
+                    image_url = _save_image_as_jpg(image_bytes)
+                except ValueError:
+                    continue  # genuinely undecodable bytes - skip rather than break the page
+                image_line = f"![{_IMAGE_ALT_TEXT[kind]}]({image_url})"
                 state["lines"].append(image_line)
                 if kind in _REVIEW_TRIGGER_KINDS:
                     state["flagged_snippets"].append(image_line)

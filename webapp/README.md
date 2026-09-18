@@ -44,20 +44,19 @@ as searchable markdown, and compiling a book from whatever matches a topic.
   API key, no cost) and highlights whichever paragraph is currently being
   spoken in a second colour, so you can listen while following along
   against the scan instead of only reading silently. Images, handwriting,
-  and low-confidence OCR regions are embedded as actual pictures in the
-  page's markdown rather than transcribed - see "Where is the output
-  saved?" below for exactly how, and its one real trade-off in this
-  editable view specifically. Nothing is written to the database until you
-  click **Approve & Save** - fix a transcription mistake before it's
-  stored, or **Skip** a page you don't want kept at all. Each approved
-  page is saved immediately (one `INSERT` per page, not a batch at the
-  end), so closing the tab or hitting **Cancel review** partway through a
-  long book keeps everything approved so far - already in the database and
-  searchable - and only costs the pages not yet reviewed. The same in-page
-  console tracks this flow's progress too (converting page N, ready for
-  review, saved/skipped). If converting a page fails (e.g. a transient
-  vision-LLM API error), a **Retry this page** button appears - it
-  re-attempts only that page, never re-saving or silently skipping one
+  and low-confidence OCR regions are saved as real `.jpg` files and linked
+  from the page's markdown rather than transcribed - see "Where is the
+  output saved?" below for exactly how. Nothing is written to the database
+  until you click **Approve & Save** - fix a transcription mistake before
+  it's stored, or **Skip** a page you don't want kept at all. Each
+  approved page is saved immediately (one `INSERT` per page, not a batch
+  at the end), so closing the tab or hitting **Cancel review** partway
+  through a long book keeps everything approved so far - already in the
+  database and searchable - and only costs the pages not yet reviewed. The
+  same in-page console tracks this flow's progress too (converting page N,
+  ready for review, saved/skipped). If converting a page fails (e.g. a
+  transient vision-LLM API error), a **Retry this page** button appears -
+  it re-attempts only that page, never re-saving or silently skipping one
   that already succeeded. The same highlighting (and embedded images,
   rendered as real pictures since this view is read-only) also appears on
   a freshly-completed bulk upload's chunk previews below the upload button
@@ -182,15 +181,15 @@ the server-side default provider when the frontend doesn't specify one.
 python3 -m pytest tests/ -v
 ```
 
-149 tests total (42 in the pipeline, 107 here) covering the SQLite/FTS5 layer
+156 tests total (42 in the pipeline, 114 here) covering the SQLite/FTS5 layer
 (including confidence/needs_review/category columns, and the book-browsing
 queries' handling of duplicate/re-uploaded pages), chunking (per-page for
 PDFs, character-budget for plain text, which exact snippets get flagged for
-the review UI's highlighting, and image embedding with correct MIME types),
-category suggestion (mocked model calls, graceful no-key fallback), the
-book compiler's retrieval + error handling for both providers (plus both
-stripping embedded images before sending anything to a model), browser-
-supplied key resolution/priority, the
+the review UI's highlighting, and image files being written/reused/served
+correctly), category suggestion (mocked model calls, graceful no-key
+fallback), the book compiler's retrieval + error handling for both
+providers (plus both stripping embedded image links before sending
+anything to a model), browser-supplied key resolution/priority, the
 background upload-job lifecycle, the page-by-page review session's state
 machine (approve/skip/retry/cancel, including recovering from a failed
 page conversion without duplicating or losing work), the FastAPI endpoints
@@ -252,7 +251,10 @@ that's not what you want.
 ## Data storage
 
 Everything lands in `data/ajandb.sqlite3` (gitignored - it's your local
-library, not something to commit). Delete it to start fresh.
+library, not something to commit) plus extracted images as real files
+under `data/images/` (see below) - delete both to start fresh. Deleting
+just the database without the images (or vice versa) leaves orphaned
+files/broken links; there's no cleanup tool for that yet.
 
 **Where is the output .md saved?** Nowhere, by default - converted
 markdown is stored purely as text in that SQLite file, one row per chunk,
@@ -263,17 +265,25 @@ own CLI (`python -m pipeline.main input.pdf output.docx`) is a separate
 tool that writes a `.docx`, not `.md`, and isn't part of this webapp.
 
 **What happens to images, handwriting, and low-confidence regions?**
-They're embedded directly in that same markdown text, in reading order, as
-`![alt](data:image/png;base64,...)` - a real, self-contained picture, not
-a "see the original document" placeholder note. That's true everywhere:
-the stored row, the exported `.md` file, and every read-only view (a
-freshly-completed bulk upload's preview, Data Search's "View pages") all
-render it as an actual `<img>`. The one place it doesn't render as a
-picture is the **page-by-page review** textarea, since it's plain-text
-editable and a `<textarea>` has no way to show an inline image - you'll
-see the literal base64 there instead. Nothing is lost or different about
-what gets saved; it's purely a display limitation of that one editable
-view. Handwriting and low-confidence regions are also flagged for the
+Each is decoded and re-saved as a real `.jpg` file under `data/images/`
+(named by a hash of its original bytes, so the exact same image - e.g.
+from re-uploading the same book - reuses the existing file instead of
+writing a duplicate), and referenced from the markdown as
+`![alt](/images/<hash>.jpg)` in its original reading-order position - a
+real picture, not a "see the original document" placeholder note. The
+`/images/<hash>.jpg` path is served directly by the backend, so it
+resolves correctly wherever you're browsing the app from (localhost, a
+`cloudflared` tunnel, ...) and renders as an actual `<img>` everywhere:
+the page-by-page review textarea (as a short, one-line link - a
+`<textarea>` still can't show an inline image, but there's no longer a
+wall of base64 text to deal with either), a freshly-completed bulk
+upload's preview, and Data Search's "View pages". **Export .md** rewrites
+each link to a full URL (against whatever host served that request)
+before download, since a saved file has no "current page" to resolve a
+host-relative link against - opening the export elsewhere, or after the
+server has stopped, will show broken image links; there's no way around
+that short of bundling the image files with the export too, which isn't
+done. Handwriting and low-confidence regions are also flagged for the
 review UI's highlighting (see "Review each page before saving" above), the
 same as an uncertain OCR text line; a plain photo isn't.
 
@@ -299,30 +309,27 @@ column layout.
   are conceptually related without using them. Fine for a personal library
   at moderate scale; a vector index would be the natural upgrade if keyword
   search starts missing relevant files.
-- Images, handwriting, and low-confidence OCR regions are embedded directly
-  in a page's markdown as base64 `data:image/...` URIs (see "Where is the
-  output saved?" below) rather than transcribed - a photo-heavy book can
-  make some rows in `data/ajandb.sqlite3` noticeably larger. In the
-  **page-by-page review** textarea specifically, that base64 text shows up
-  as a long literal string rather than a picture - plain `<textarea>`s
-  can't render inline images, so there's no way to show it as a picture
-  there while keeping it editable; the bulk-upload preview and Data
-  Search's "View pages"/export all render it as a real `<img>` instead,
-  since those are read-only. There's nothing meaningful to hand-edit in an
-  embedded image's own markdown line anyway - only the surrounding text.
-- The book compiler and category auto-suggestion both strip embedded images
-  down to a short `[label]` placeholder before sending anything to the
-  model, so a photo-heavy page doesn't burn its whole context budget on
-  meaningless base64 - but the book compiler still sends up to 20 matching
-  chunks (8000 chars each, post-stripping) per request, so a very large
-  personal library on a broad topic could still exceed that and only see a
-  partial set of matches.
+- Images, handwriting, and low-confidence OCR regions become real `.jpg`
+  files under `data/images/`, linked from the markdown - not transcribed,
+  and never cleaned up automatically. Deleting a chunk (or the whole
+  database) doesn't delete the image files it referenced; re-uploading a
+  file you've already uploaded reuses existing images by content hash
+  rather than duplicating them, but there's no garbage collection for
+  images that are no longer referenced by anything. Fine for a personal
+  library; worth knowing if `data/images/` ever needs manual tidying.
+- The book compiler and category auto-suggestion both strip embedded image
+  links down to a short `[label]` placeholder before sending anything to
+  the model, since a markdown image link isn't meaningful prose either
+  way - but the book compiler still sends up to 20 matching chunks (8000
+  chars each, post-stripping) per request, so a very large personal
+  library on a broad topic could still exceed that and only see a partial
+  set of matches.
 - **Read aloud** (in page-by-page review) uses the browser's own
   `speechSynthesis` API - no server call, no API key, but voice
   availability/quality (especially for Thai and other non-English text)
   depends entirely on what the browser/OS provides. It reads one paragraph
-  at a time and highlights the one currently being spoken; embedded images
-  are skipped rather than read as base64 gibberish.
+  at a time and highlights the one currently being spoken; embedded image
+  links are skipped rather than read aloud as a URL.
 - Audio and video upload aren't supported yet (speech-to-text would need
   OpenAI's Whisper API specifically - Claude has no audio API - plus
   `ffmpeg` for video). Deliberately deferred rather than half-built.

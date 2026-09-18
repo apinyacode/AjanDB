@@ -14,7 +14,8 @@ import threading
 import uuid
 from urllib.parse import quote
 
-from fastapi import FastAPI, File, Form, HTTPException, Response, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Request, Response, UploadFile
+from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -25,6 +26,20 @@ app = FastAPI(title="AjanDB")
 _FRONTEND_DIR = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "frontend"
 )
+
+
+@app.get("/images/{filename}")
+def get_image(filename: str):
+    """Serves an extracted image (see convert.py's _save_image_as_jpg) -
+    a plain route reading convert.IMAGES_DIR fresh on every request rather
+    than a StaticFiles mount, which would otherwise bake in whatever
+    directory existed at import time and not follow along if that ever
+    changes (as it does in tests, via monkeypatch). filename is reduced to
+    its basename first so a malformed value can't escape IMAGES_DIR."""
+    path = os.path.join(convert.IMAGES_DIR, os.path.basename(filename))
+    if not os.path.isfile(path):
+        raise HTTPException(404, "Image not found")
+    return FileResponse(path, media_type="image/jpeg")
 
 
 def _resolve_client_key(provider: str | None, anthropic_key: str | None,
@@ -375,8 +390,24 @@ def _content_disposition(filename: str) -> str:
     return f"attachment; filename=\"{ascii_fallback}\"; filename*=UTF-8''{quote(filename)}"
 
 
+_IMAGE_LINK_RE = re.compile(r"(!\[[^\]]*\]\()(/images/[^)]+)(\))")
+
+
+def _absolutize_image_links(markdown: str, request: Request) -> str:
+    """Stored markdown references images by a host-relative /images/<hash>.jpg
+    path (see convert.py), which resolves correctly wherever the app itself
+    is being browsed from - but a downloaded .md file has no "current page"
+    to resolve a relative link against, so exporting rewrites each one to a
+    full URL against whatever host served this request (localhost, a
+    cloudflared tunnel, ...). Opening the export elsewhere, or after this
+    server has stopped running, will show broken image links - there's no
+    way around that without bundling the image files with the export too."""
+    base = str(request.base_url).rstrip("/")
+    return _IMAGE_LINK_RE.sub(lambda m: f"{m.group(1)}{base}{m.group(2)}{m.group(3)}", markdown)
+
+
 @app.get("/api/books/{book_id}/export")
-def export_book(book_id: int):
+def export_book(book_id: int, request: Request):
     """Downloads one book's full chunk set as a single concatenated
     markdown file, in page order - the only way any converted text leaves
     the database as an actual file (it's otherwise stored purely as text
@@ -389,7 +420,7 @@ def export_book(book_id: int):
         conn.close()
     if not chunks:
         raise HTTPException(404, "Book not found")
-    markdown = _book_to_markdown(chunks)
+    markdown = _absolutize_image_links(_book_to_markdown(chunks), request)
     filename = _export_filename(chunks[0]["source_filename"])
     return Response(
         content=markdown, media_type="text/markdown",

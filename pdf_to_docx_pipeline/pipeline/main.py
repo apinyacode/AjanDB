@@ -62,12 +62,10 @@ def build_doc_items(pdf_path: str, langs: str = ocr.DEFAULT_LANGS,
             label = handwriting.classify_embedded_image(
                 block.image_bytes, threshold=handwriting_threshold)
             if label == "handwritten":
-                doc_items.append({"kind": "handwriting", "image_bytes": block.image_bytes,
-                                   "image_ext": block.image_ext})
+                doc_items.append({"kind": "handwriting", "image_bytes": block.image_bytes})
                 stats["handwritten_lines"] += 1
             else:
-                doc_items.append({"kind": "image", "image_bytes": block.image_bytes,
-                                   "image_ext": block.image_ext})
+                doc_items.append({"kind": "image", "image_bytes": block.image_bytes})
                 stats["images"] += 1
 
         elif block.kind == "scanned_page":

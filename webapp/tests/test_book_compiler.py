@@ -137,6 +137,14 @@ def test_strip_embedded_images_replaces_data_uri_with_short_label():
     assert "[handwriting]" in stripped
 
 
+def test_strip_embedded_images_replaces_image_file_link_with_short_label():
+    markdown = "Some text\n\n![handwriting](/images/3f9a2b8c1d4e.jpg)\n\nMore text"
+    stripped = book_compiler._strip_embedded_images(markdown)
+    assert "/images/" not in stripped
+    assert "Some text" in stripped and "More text" in stripped
+    assert "[handwriting]" in stripped
+
+
 def test_compile_book_strips_embedded_images_before_sending_to_model(monkeypatch, tmp_path):
     conn = _tmp_conn(tmp_path)
     huge_fake_base64 = "A" * 5000  # stand-in for a real embedded image's bulk

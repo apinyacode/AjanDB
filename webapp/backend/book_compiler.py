@@ -28,11 +28,12 @@ from openai import OpenAI
 
 from . import db as db_module
 
-# Embedded images (see convert.py) are base64 data URIs that can run to tens
-# of KB of characters meaningless to an LLM - left in, one image could eat
-# the entire max_chars_per_source budget for a source and crowd out the
-# actual text. Swapped for a short bracketed label before anything is sent.
-_IMAGE_MARKDOWN_RE = re.compile(r"!\[([^\]]*)\]\(data:image/[^)]*\)")
+# Embedded images (see convert.py) are markdown image links to a real .jpg
+# file - meaningless to an LLM as prose either way, so swapped for a short
+# bracketed label before anything is sent. (Matches both the current
+# /images/<hash>.jpg links and the old inline base64 data URIs, in case a
+# database still has rows saved before that changed.)
+_IMAGE_MARKDOWN_RE = re.compile(r"!\[([^\]]*)\]\((?:/images/[^)]*|data:image/[^)]*)\)")
 
 
 def _strip_embedded_images(markdown: str) -> str:
