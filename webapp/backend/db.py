@@ -121,6 +121,85 @@ def list_documents(conn: sqlite3.Connection) -> list[dict]:
     return [dict(r) for r in rows]
 
 
+_LATEST_PER_PAGE_CTE = """
+    WITH latest_per_page AS (
+        SELECT d.* FROM documents d
+        WHERE d.id = (
+            SELECT d2.id FROM documents d2
+            WHERE d2.source_filename = d.source_filename
+              AND d2.total_pages = d.total_pages
+              AND d2.page_number = d.page_number
+            ORDER BY d2.uploaded_at DESC, d2.id DESC
+            LIMIT 1
+        )
+    )
+"""
+# Re-running an upload for the same page (e.g. scripts/chunked_upload.py
+# without --resume, or just re-uploading the same file) inserts a second row
+# for that page rather than overwriting the first - documented elsewhere as
+# an accepted limitation of the raw chunk store. Browsing/exporting a "book"
+# should still show its *current* pages once each, though, not double-count
+# or repeat a page that happens to exist twice - so both queries below
+# collapse to the most-recently-uploaded row per (source_filename,
+# total_pages, page_number) before doing anything else with the rows.
+
+
+def list_books(conn: sqlite3.Connection) -> list[dict]:
+    """Groups chunks into "books" for browsing - one entry per uploaded
+    source file, whether it needed conversion (a scanned PDF) or was stored
+    as-is (.txt/.md/.docx). The schema has no real book/upload id, and
+    can't: chunked_upload.py and the page-by-page review flow each insert
+    one source file's chunks across many separate insert_chunks() calls (one
+    per batch or even per page), so every chunk gets its own `uploaded_at` -
+    grouping by that would show a 28-page reviewed book as 28 "books".
+    (source_filename, total_pages) is stable across all of those calls for
+    one logical upload instead, since every insert for the same file is
+    told the file's true total page count - so it's used as the group key,
+    with the group's lowest row id serving as a lightweight "book id" for
+    get_book_chunks()/export. Two different files that happen to share both
+    a filename and a page count would incorrectly merge into one entry; a
+    real book id column would be the fix if that ever matters in practice."""
+    rows = conn.execute(
+        _LATEST_PER_PAGE_CTE
+        + """
+        SELECT MIN(id) AS id, source_filename, source_type, total_pages,
+               MAX(category) AS category,
+               COUNT(*) AS pages_stored,
+               SUM(needs_review) AS needs_review_count,
+               AVG(confidence) AS avg_confidence,
+               MIN(uploaded_at) AS first_uploaded_at,
+               MAX(uploaded_at) AS last_uploaded_at
+        FROM latest_per_page
+        GROUP BY source_filename, total_pages
+        ORDER BY last_uploaded_at DESC
+        """
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_book_chunks(conn: sqlite3.Connection, book_id: int) -> list[dict] | None:
+    """`book_id` is the `id` field from list_books() (that group's lowest
+    row id, not a real book id column - see list_books()'s docstring).
+    Returns the current chunk for each page sharing that row's
+    (source_filename, total_pages), ordered by page number, or None if
+    book_id doesn't match any row."""
+    anchor = conn.execute(
+        "SELECT source_filename, total_pages FROM documents WHERE id = ?", (book_id,)
+    ).fetchone()
+    if not anchor:
+        return None
+    rows = conn.execute(
+        _LATEST_PER_PAGE_CTE
+        + """
+        SELECT * FROM latest_per_page
+        WHERE source_filename = ? AND total_pages = ?
+        ORDER BY page_number
+        """,
+        (anchor["source_filename"], anchor["total_pages"]),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
 def _sanitize_fts_query(query: str) -> str:
     """Quotes each token so punctuation/special FTS5 syntax characters in
     user input (", *, -, etc.) can't break the MATCH query, then ORs them

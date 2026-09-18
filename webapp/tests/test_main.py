@@ -401,3 +401,83 @@ def test_review_unknown_session_returns_404(tmp_path, monkeypatch):
     assert client.post("/api/review/not-a-real-session/skip").status_code == 404
     assert client.post("/api/review/not-a-real-session/cancel").status_code == 404
     assert client.post("/api/review/not-a-real-session/retry").status_code == 404
+
+
+# --- Browsing and exporting books (/api/books*) ---
+
+def test_list_books_returns_empty_list_when_nothing_uploaded(tmp_path, monkeypatch):
+    client = _client(tmp_path, monkeypatch)
+    assert client.get("/api/books").json() == []
+
+
+def test_list_books_groups_a_multi_page_upload_into_one_entry(tmp_path, monkeypatch):
+    client = _client(tmp_path, monkeypatch)
+    _upload_and_wait(
+        client,
+        files={"file": ("book.pdf", _sample_pdf_bytes(), "application/pdf")},
+        data={"langs": "eng+tha"},
+    )
+    books = client.get("/api/books").json()
+    assert len(books) == 1
+    assert books[0]["source_filename"] == "book.pdf"
+    assert books[0]["total_pages"] == 3
+    assert books[0]["pages_stored"] == 3
+
+
+def test_get_book_returns_ordered_chunks(tmp_path, monkeypatch):
+    client = _client(tmp_path, monkeypatch)
+    _upload_and_wait(
+        client,
+        files={"file": ("book.pdf", _sample_pdf_bytes(), "application/pdf")},
+        data={"langs": "eng+tha"},
+    )
+    book_id = client.get("/api/books").json()[0]["id"]
+
+    resp = client.get(f"/api/books/{book_id}")
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["source_filename"] == "book.pdf"
+    assert [c["page_number"] for c in body["chunks"]] == [1, 2, 3]
+
+
+def test_get_book_returns_404_for_unknown_id(tmp_path, monkeypatch):
+    client = _client(tmp_path, monkeypatch)
+    assert client.get("/api/books/999").status_code == 404
+
+
+def test_export_book_returns_downloadable_markdown(tmp_path, monkeypatch):
+    client = _client(tmp_path, monkeypatch)
+    _upload_and_wait(
+        client,
+        files={"file": ("book.pdf", _sample_pdf_bytes(), "application/pdf")},
+        data={"langs": "eng+tha"},
+    )
+    book_id = client.get("/api/books").json()[0]["id"]
+
+    resp = client.get(f"/api/books/{book_id}/export")
+    assert resp.status_code == 200, resp.text
+    assert resp.headers["content-type"].startswith("text/markdown")
+    assert 'filename="book.md"' in resp.headers["content-disposition"]
+    assert "# book.pdf" in resp.text
+    assert "## Page 1" in resp.text
+    assert "## Page 3" in resp.text
+    assert "Field Visit Notes" in resp.text  # page 1's actual converted text
+
+
+def test_export_book_returns_404_for_unknown_id(tmp_path, monkeypatch):
+    client = _client(tmp_path, monkeypatch)
+    assert client.get("/api/books/999/export").status_code == 404
+
+
+def test_export_book_encodes_non_ascii_filename(tmp_path, monkeypatch):
+    client = _client(tmp_path, monkeypatch)
+    _upload_and_wait(
+        client,
+        files={"file": ("หนังสือ.pdf", _sample_pdf_bytes(), "application/pdf")},
+        data={"langs": "eng+tha"},
+    )
+    book_id = client.get("/api/books").json()[0]["id"]
+
+    resp = client.get(f"/api/books/{book_id}/export")
+    assert resp.status_code == 200, resp.text
+    assert "filename*=UTF-8''" in resp.headers["content-disposition"]

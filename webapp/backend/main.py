@@ -7,12 +7,14 @@ Run with:
     uvicorn backend.main:app --reload --app-dir webapp
 """
 import os
+import re
 import shutil
 import tempfile
 import threading
 import uuid
+from urllib.parse import quote
 
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Response, UploadFile
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -312,6 +314,87 @@ def get_document(doc_id: int):
     if not doc:
         raise HTTPException(404, "Document not found")
     return doc
+
+
+@app.get("/api/books")
+def list_books():
+    """One entry per uploaded source file (whether it needed OCR or was
+    stored as-is), for browsing the library rather than searching it - see
+    db.list_books()'s docstring for how "one book" is identified."""
+    conn = db.get_connection()
+    try:
+        return db.list_books(conn)
+    finally:
+        conn.close()
+
+
+@app.get("/api/books/{book_id}")
+def get_book(book_id: int):
+    conn = db.get_connection()
+    try:
+        chunks = db.get_book_chunks(conn, book_id)
+    finally:
+        conn.close()
+    if not chunks:
+        raise HTTPException(404, "Book not found")
+    first = chunks[0]
+    return {
+        "source_filename": first["source_filename"],
+        "source_type": first["source_type"],
+        "total_pages": first["total_pages"],
+        "category": first["category"],
+        "chunks": chunks,
+    }
+
+
+def _book_to_markdown(chunks: list[dict]) -> str:
+    first = chunks[0]
+    lines = [
+        f"# {first['source_filename']}", "",
+        f"*Category: {first['category']} · {first['total_pages']} page(s)*", "",
+    ]
+    for chunk in chunks:
+        lines.append(f"## Page {chunk['page_number']}")
+        lines.append("")
+        lines.append(chunk["markdown"])
+        lines.append("")
+    return "\n".join(lines)
+
+
+def _export_filename(source_filename: str) -> str:
+    base = os.path.splitext(source_filename)[0]
+    return f"{base}.md"
+
+
+def _content_disposition(filename: str) -> str:
+    # A non-ASCII filename (very possible here - e.g. a Thai book title)
+    # can't go in the plain `filename=` parameter, so it's UTF-8
+    # percent-encoded per RFC 5987 in `filename*=`, with an ASCII-only
+    # fallback in `filename=` for anything that doesn't support that.
+    ascii_fallback = re.sub(r'[^\x20-\x7E]', "_", filename).replace('"', "'") or "export.md"
+    return f"attachment; filename=\"{ascii_fallback}\"; filename*=UTF-8''{quote(filename)}"
+
+
+@app.get("/api/books/{book_id}/export")
+def export_book(book_id: int):
+    """Downloads one book's full chunk set as a single concatenated
+    markdown file, in page order - the only way any converted text leaves
+    the database as an actual file (it's otherwise stored purely as text
+    in SQLite, never written to disk - see the README's "Where is the
+    output .md saved?" note)."""
+    conn = db.get_connection()
+    try:
+        chunks = db.get_book_chunks(conn, book_id)
+    finally:
+        conn.close()
+    if not chunks:
+        raise HTTPException(404, "Book not found")
+    markdown = _book_to_markdown(chunks)
+    filename = _export_filename(chunks[0]["source_filename"])
+    return Response(
+        content=markdown, media_type="text/markdown",
+        headers={"Content-Disposition": _content_disposition(filename)},
+    )
 
 
 @app.get("/api/search")

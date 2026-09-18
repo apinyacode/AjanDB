@@ -131,10 +131,20 @@ button {
 
 button:hover { opacity: 0.9; }
 
-button.ghost {
+.ghost {
   background: transparent;
   color: var(--fg);
   border-color: var(--border);
+}
+
+a.ghost {
+  display: inline-block;
+  padding: 0.5rem 1.1rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 0.95rem;
+  text-decoration: none;
+  cursor: pointer;
 }
 
 #api-key-panel {
@@ -231,6 +241,25 @@ mark {
 .chunk-card .markdown-preview {
   margin-top: 0.5rem;
   max-height: 30vh;
+}
+
+.book-card {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.75rem;
+  margin-top: 0.75rem;
+}
+
+.book-card.needs-review {
+  border-color: var(--danger);
+}
+
+.book-card .row {
+  margin-top: 0.6rem;
+}
+
+.book-chunks {
+  margin-top: 0.5rem;
 }
 
 .chunk-meta {

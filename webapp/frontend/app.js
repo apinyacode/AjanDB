@@ -142,6 +142,7 @@ document.getElementById("upload-btn").addEventListener("click", async () => {
         (flagged ? ` — ${flagged} chunk(s) flagged for review.` : ".");
       categoryInput.value = pollData.category;
       renderChunks(chunksEl, pollData.chunks);
+      loadBooks();
       break;
     }
   } catch (err) {
@@ -256,6 +257,7 @@ function endReviewSession(message) {
   reviewSessionId = null;
   setReviewControlsEnabled(true);
   document.getElementById("upload-status").textContent = message;
+  loadBooks();
 }
 
 async function reviewAction(path, body) {
@@ -337,6 +339,79 @@ async function runSearch() {
     results.appendChild(li);
   });
 }
+
+// --- Browse all books: every uploaded source file, grouped from its chunks
+// (see db.list_books()'s docstring for how "one book" is identified). ---
+const booksListEl = document.getElementById("books-list");
+
+async function loadBooks() {
+  booksListEl.textContent = "Loading…";
+  try {
+    const res = await fetch("/api/books");
+    const books = await res.json();
+    booksListEl.innerHTML = "";
+    if (!books.length) {
+      booksListEl.innerHTML = `<p class="hint">No books uploaded yet.</p>`;
+      return;
+    }
+    books.forEach((book) => booksListEl.appendChild(renderBookCard(book)));
+  } catch (err) {
+    booksListEl.innerHTML = `<p class="status">Error: ${err.message}</p>`;
+  }
+}
+
+function renderBookCard(book) {
+  const card = document.createElement("div");
+  card.className = "book-card" + (book.needs_review_count ? " needs-review" : "");
+  const confidenceText = book.avg_confidence === null || book.avg_confidence === undefined
+    ? "n/a" : `${Math.round(book.avg_confidence)}%`;
+  const pagesText = book.pages_stored === book.total_pages
+    ? `${book.total_pages} page(s)`
+    : `${book.pages_stored}/${book.total_pages} page(s) stored`;
+
+  card.innerHTML =
+    `<div class="chunk-meta">` +
+    `<strong>${escapeHtml(book.source_filename)}</strong>` +
+    `<span>${escapeHtml(book.source_type)}</span>` +
+    `<span>${pagesText}</span>` +
+    `<span>${escapeHtml(book.category)}</span>` +
+    `<span>Confidence: ${confidenceText}</span>` +
+    (book.needs_review_count
+      ? `<span class="badge">${book.needs_review_count} page(s) need review</span>` : "") +
+    `</div>` +
+    `<div class="row">` +
+    `<button class="ghost view-book-btn" type="button">View pages</button>` +
+    `<a class="ghost" href="/api/books/${book.id}/export" download>Export .md</a>` +
+    `</div>` +
+    `<div class="book-chunks hidden"></div>`;
+
+  const viewBtn = card.querySelector(".view-book-btn");
+  const chunksEl = card.querySelector(".book-chunks");
+  viewBtn.addEventListener("click", async () => {
+    if (!chunksEl.classList.contains("hidden")) {
+      chunksEl.classList.add("hidden");
+      viewBtn.textContent = "View pages";
+      return;
+    }
+    viewBtn.textContent = "Loading…";
+    try {
+      const res = await fetch(`/api/books/${book.id}`);
+      const data = await res.json();
+      renderChunks(chunksEl, data.chunks);
+      chunksEl.classList.remove("hidden");
+      viewBtn.textContent = "Hide pages";
+    } catch (err) {
+      chunksEl.innerHTML = `<p class="status">Error: ${err.message}</p>`;
+      chunksEl.classList.remove("hidden");
+      viewBtn.textContent = "View pages";
+    }
+  });
+
+  return card;
+}
+
+document.getElementById("refresh-books-btn").addEventListener("click", loadBooks);
+loadBooks();
 
 document.getElementById("chat-btn").addEventListener("click", async () => {
   const instruction = document.getElementById("chat-input").value.trim();

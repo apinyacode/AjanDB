@@ -93,3 +93,107 @@ def test_list_documents_orders_newest_first(tmp_path):
     docs = db.list_documents(conn)
     assert docs[0]["id"] == ids2[0]
     assert docs[1]["id"] == ids1[0]
+
+
+def test_list_books_groups_one_upload_into_one_entry(tmp_path):
+    conn = _tmp_conn(tmp_path)
+    chunks = [
+        {"page_number": 1, "markdown": "page one", "confidence": 90.0, "needs_review": False},
+        {"page_number": 2, "markdown": "page two", "confidence": 60.0, "needs_review": True},
+    ]
+    db.insert_chunks(conn, "book.pdf", "pdf", "Dharma Talks", chunks)
+
+    books = db.list_books(conn)
+    assert len(books) == 1
+    book = books[0]
+    assert book["source_filename"] == "book.pdf"
+    assert book["source_type"] == "pdf"
+    assert book["total_pages"] == 2
+    assert book["pages_stored"] == 2
+    assert book["category"] == "Dharma Talks"
+    assert book["needs_review_count"] == 1
+    assert book["avg_confidence"] == 75.0
+
+
+def test_list_books_groups_multi_batch_upload_into_one_entry(tmp_path):
+    # scripts/chunked_upload.py and the page-by-page review flow each call
+    # insert_chunks() once per batch/page for the SAME logical book, with a
+    # different uploaded_at every time - grouping must not be fooled by that.
+    conn = _tmp_conn(tmp_path)
+    db.insert_chunks(conn, "book.pdf", "pdf", "Field Notes",
+                      [{"page_number": 1, "markdown": "p1", "confidence": 90.0, "needs_review": False}],
+                      total_pages=3)
+    db.insert_chunks(conn, "book.pdf", "pdf", "Field Notes",
+                      [{"page_number": 2, "markdown": "p2", "confidence": 80.0, "needs_review": False}],
+                      total_pages=3)
+    db.insert_chunks(conn, "book.pdf", "pdf", "Field Notes",
+                      [{"page_number": 3, "markdown": "p3", "confidence": 70.0, "needs_review": False}],
+                      total_pages=3)
+
+    books = db.list_books(conn)
+    assert len(books) == 1
+    assert books[0]["total_pages"] == 3
+    assert books[0]["pages_stored"] == 3
+
+
+def test_list_books_keeps_different_files_separate(tmp_path):
+    conn = _tmp_conn(tmp_path)
+    db.insert_chunks(conn, "a.md", "md", "Notes", _one_chunk("a"))
+    db.insert_chunks(conn, "b.md", "md", "Notes", _one_chunk("b"))
+    assert len(db.list_books(conn)) == 2
+
+
+def test_list_books_avg_confidence_is_none_when_no_chunk_has_one(tmp_path):
+    conn = _tmp_conn(tmp_path)
+    db.insert_chunks(conn, "notes.md", "md", "Notes", _one_chunk("plain text"))
+    assert db.list_books(conn)[0]["avg_confidence"] is None
+
+
+def test_get_book_chunks_returns_ordered_pages(tmp_path):
+    conn = _tmp_conn(tmp_path)
+    chunks = [
+        {"page_number": 2, "markdown": "second", "confidence": None, "needs_review": False},
+        {"page_number": 1, "markdown": "first", "confidence": None, "needs_review": False},
+    ]
+    ids = db.insert_chunks(conn, "book.pdf", "pdf", "Notes", chunks)
+    book_id = db.list_books(conn)[0]["id"]
+
+    result = db.get_book_chunks(conn, book_id)
+    assert [c["page_number"] for c in result] == [1, 2]
+    assert [c["markdown"] for c in result] == ["first", "second"]
+    assert book_id in ids
+
+
+def test_get_book_chunks_returns_none_for_unknown_id(tmp_path):
+    conn = _tmp_conn(tmp_path)
+    assert db.get_book_chunks(conn, 999) is None
+
+
+def test_reuploading_a_page_does_not_duplicate_or_double_count_it(tmp_path):
+    # Re-running an upload for the same file (e.g. scripts/chunked_upload.py
+    # without --resume) inserts a second row per page rather than replacing
+    # the first. Browsing/exporting must show each page once - the current
+    # version - not double it or sum stats across both copies.
+    conn = _tmp_conn(tmp_path)
+    db.insert_chunks(conn, "book.pdf", "pdf", "Notes",
+                      [{"page_number": 1, "markdown": "old text", "confidence": 50.0, "needs_review": True}],
+                      total_pages=2)
+    db.insert_chunks(conn, "book.pdf", "pdf", "Notes",
+                      [{"page_number": 2, "markdown": "page two", "confidence": 90.0, "needs_review": False}],
+                      total_pages=2)
+    # re-upload page 1 - newer row, should supersede the first for that page
+    db.insert_chunks(conn, "book.pdf", "pdf", "Notes",
+                      [{"page_number": 1, "markdown": "new text", "confidence": 95.0, "needs_review": False}],
+                      total_pages=2)
+
+    books = db.list_books(conn)
+    assert len(books) == 1
+    book = books[0]
+    assert book["pages_stored"] == 2  # not 3, even though 3 rows exist
+    assert book["needs_review_count"] == 0  # the stale flagged page-1 row must not count
+    assert book["avg_confidence"] == 92.5  # avg(95.0, 90.0), not the stale 50.0
+
+    chunks = db.get_book_chunks(conn, book["id"])
+    assert len(chunks) == 2  # not 3
+    assert chunks[0]["markdown"] == "new text"  # latest wins, not the stale copy
+    assert chunks[1]["markdown"] == "page two"

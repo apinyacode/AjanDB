@@ -48,7 +48,15 @@ as searchable markdown, and compiling a book from whatever matches a topic.
   that already succeeded.
 - **Data Search** — full-text keyword search (SQLite FTS5) over every stored
   chunk, returning matches with their filename, page number, category,
-  confidence, review flag, and a highlighted snippet.
+  confidence, review flag, and a highlighted snippet. Below the search box,
+  **Browse all books** lists every uploaded source file as one entry each
+  (scanned/OCR'd PDFs and plain text/markdown alike) with its page count,
+  category, average confidence, and how many pages are flagged for review.
+  **View pages** expands it in place to show every page's converted text
+  (same cards as a fresh upload); **Export .md** downloads that book's
+  full text as a single markdown file, pages in order under `## Page N`
+  headings - the only way converted text leaves the database as an actual
+  file (see "Where is the output saved?" below).
 - **Data Generation** — give it an instruction (e.g. "compile a book from all
   the files containing content about how to raise a child"); it keyword-
   searches the store for matching chunks and asks Claude or GPT (your choice,
@@ -157,8 +165,9 @@ the server-side default provider when the frontend doesn't specify one.
 python3 -m pytest tests/ -v
 ```
 
-126 tests total (42 in the pipeline, 84 here) covering the SQLite/FTS5 layer
-(including confidence/needs_review/category columns), chunking (per-page for
+140 tests total (42 in the pipeline, 98 here) covering the SQLite/FTS5 layer
+(including confidence/needs_review/category columns, and the book-browsing
+queries' handling of duplicate/re-uploaded pages), chunking (per-page for
 PDFs, character-budget for plain text), category suggestion (mocked model
 calls, graceful no-key fallback), the book compiler's retrieval + error
 handling for both providers, browser-supplied key resolution/priority, the
@@ -224,6 +233,23 @@ that's not what you want.
 
 Everything lands in `data/ajandb.sqlite3` (gitignored - it's your local
 library, not something to commit). Delete it to start fresh.
+
+**Where is the output .md saved?** Nowhere, by default - converted
+markdown is stored purely as text in that SQLite file, one row per chunk,
+never written out to a `.md` file on disk. Data Search's **Export .md**
+(see above) is the way to get one: it concatenates a book's chunks in page
+order into a single downloadable markdown file. `pdf_to_docx_pipeline`'s
+own CLI (`python -m pipeline.main input.pdf output.docx`) is a separate
+tool that writes a `.docx`, not `.md`, and isn't part of this webapp.
+
+**Re-uploading the same file:** nothing here deduplicates chunks at
+insert time - re-uploading a book (or `chunked_upload.py` re-running a
+batch without `--resume`) adds a second row per page rather than
+replacing the first (see that script's own README section). Browsing and
+exporting only ever show the *latest* row per page, though, so a stray
+duplicate from a re-run doesn't show up twice or skew a book's average
+confidence/review count - it's just an unused extra row taking up (very
+little) space until you clean it out by hand if it ever bothers you.
 
 **Schema note:** this replaced an earlier one-row-per-file schema
 (`filename`/`markdown` only, no chunking/confidence/category). There's no
