@@ -57,6 +57,15 @@ as searchable markdown, and compiling a book from whatever matches a topic.
   run more than once, and the diff panel is purely informational (it doesn't
   overwrite your editable text - copy over anything you agree with by hand).
 
+  Thai text is also checked against [pythainlp](https://pythainlp.org)'s
+  dictionary: any word it doesn't recognise gets a red wavy underline in the
+  text box, and a suggested correction appears in a hint line below (e.g.
+  `Possible Thai typo(s): "สวัสดร" → "สวัสดี"`). Same "fix it and the
+  highlight disappears" behaviour as the confidence flags. It's a dictionary
+  lookup, not real language understanding, so a genuine word it just doesn't
+  know - a proper noun, slang, a loanword - gets flagged like a typo too;
+  treat it as a hint to double-check, not a verdict.
+
   Images, handwriting,
   and low-confidence OCR regions are saved as real `.jpg` files and linked
   from the page's markdown rather than transcribed - see "Where is the
@@ -195,7 +204,7 @@ the server-side default provider when the frontend doesn't specify one.
 python3 -m pytest tests/ -v
 ```
 
-165 tests total (42 in the pipeline, 123 here) covering the SQLite/FTS5 layer
+169 tests total (42 in the pipeline, 127 here) covering the SQLite/FTS5 layer
 (including confidence/needs_review/category columns, and the book-browsing
 queries' handling of duplicate/re-uploaded pages), chunking (per-page for
 PDFs, character-budget for plain text, which exact snippets get flagged for
@@ -207,8 +216,10 @@ anything to a model), browser-supplied key resolution/priority, the
 background upload-job lifecycle, the page-by-page review session's state
 machine (approve/skip/retry/cancel, including recovering from a failed
 page conversion without duplicating or losing work, and the second-opinion
-word-diff verification), the FastAPI endpoints via `TestClient`, and the
-standalone chunked-upload script below.
+word-diff verification), Thai spell-checking (correctly-spelled text,
+flagged typos with suggestions, non-Thai tokens ignored, duplicates
+collapsed), the FastAPI endpoints via `TestClient`, and the standalone
+chunked-upload script below.
 
 ## Digitising a whole book without the web upload (`scripts/chunked_upload.py`)
 

@@ -35,7 +35,7 @@ import re
 import threading
 import uuid
 
-from . import categorize, convert, db
+from . import categorize, convert, db, spellcheck
 
 _sessions: dict[str, dict] = {}
 _lock = threading.Lock()
@@ -116,6 +116,10 @@ def _convert_one_page(session: dict, page_index: int) -> dict:
         # the frontend highlights them so a human reviewing the page knows
         # exactly what to check first instead of re-reading the whole thing.
         "flagged_snippets": chunk.get("flagged_snippets", []),
+        # Thai words not in pythainlp's dictionary, each with suggested
+        # correction(s) - a separate, advisory-only highlight from the
+        # confidence flags above (see spellcheck.py).
+        "typos": spellcheck.find_thai_typos(chunk["markdown"]),
         "image_base64": base64.b64encode(png_bytes).decode("ascii"),
     }
 

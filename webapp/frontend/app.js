@@ -250,6 +250,7 @@ const reviewImage = document.getElementById("review-image");
 const reviewMarkdown = document.getElementById("review-markdown");
 const reviewMarkdownHighlight = document.getElementById("review-markdown-highlight");
 const reviewHighlightHint = document.getElementById("review-highlight-hint");
+const reviewTypoHint = document.getElementById("review-typo-hint");
 const reviewApproveBtn = document.getElementById("review-approve-btn");
 const reviewSkipBtn = document.getElementById("review-skip-btn");
 const reviewRetryBtn = document.getElementById("review-retry-btn");
@@ -266,22 +267,34 @@ const verifySuggestionHint = document.getElementById("verify-suggestion-hint");
 let reviewSessionId = null;
 let reviewTotalPages = 0;
 let reviewFlaggedSnippets = [];
+let reviewTypos = [];
 
 // Re-renders the highlight overlay from the textarea's *current* value, so
-// editing a flagged line makes its highlight disappear the moment the fix
-// no longer matches the original flagged text - a natural "you fixed it"
-// signal without any extra bookkeeping. Also shows which paragraph "Read
-// aloud" (below) is currently speaking, in a different colour.
+// editing a flagged line (or a misspelled word) makes its highlight
+// disappear the moment the fix no longer matches the original - a natural
+// "you fixed it" signal without any extra bookkeeping. Also shows which
+// paragraph "Read aloud" (below) is currently speaking, in a different
+// colour. Thai spelling flags (see spellcheck.py) are a third, lower-
+// priority group - a typo inside an already-flagged low-confidence line
+// just shows as "flagged" (renderHighlightedMarkdown matches the longer
+// snippet first), since that line already has the reviewer's attention.
 function updateReviewHighlight() {
   const text = reviewMarkdown.value;
+  const stillPresentTypos = reviewTypos.filter((t) => text.includes(t.word));
   const groups = [
     { snippets: reviewSpeakingSegment ? [reviewSpeakingSegment] : [], className: "speaking" },
     { snippets: reviewFlaggedSnippets, className: "flagged" },
+    { snippets: stillPresentTypos.map((t) => t.word), className: "typo" },
   ];
   reviewMarkdownHighlight.innerHTML = renderHighlightedMarkdown(text, groups) + "\n";
   const stillFlagged = reviewFlaggedSnippets.filter((s) => s && text.includes(s)).length;
   reviewHighlightHint.textContent = stillFlagged
     ? `${stillFlagged} highlighted section(s) below have lower-confidence or untranscribed text - check those first.`
+    : "";
+  reviewTypoHint.textContent = stillPresentTypos.length
+    ? "Possible Thai typo(s): " + stillPresentTypos
+        .map((t) => `"${t.word}"${t.suggestions.length ? ` → "${t.suggestions[0]}"` : ""}`)
+        .join(", ")
     : "";
 }
 reviewMarkdown.addEventListener("input", updateReviewHighlight);
@@ -460,6 +473,7 @@ function showReviewPage(page) {
   reviewImage.src = `data:image/png;base64,${page.image_base64}`;
   reviewMarkdown.value = page.markdown;
   reviewFlaggedSnippets = page.flagged_snippets || [];
+  reviewTypos = page.typos || [];
   updateReviewHighlight();
   reviewStatus.textContent = "";
 

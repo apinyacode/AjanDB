@@ -39,6 +39,7 @@ def test_start_converts_page_one_and_saves_nothing_yet(tmp_path):
     assert "Field Visit Notes" in page["markdown"]
     assert page["image_base64"]
     assert page["flagged_snippets"] == []  # page 1 is all born-digital text
+    assert page["typos"] == []  # page 1's Thai text is all correctly spelled
     assert result["log"] == [
         "Started: book.pdf (3 page(s), engine=classical)",
         "Converting page 1/3...",

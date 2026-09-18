@@ -396,7 +396,7 @@ mark {
   border: 1px solid var(--border);
   border-radius: 6px;
   font-family: ui-monospace, monospace;
-  font-size: 0.85rem;
+  font-size: 0.935rem;
   line-height: 1.5;
   white-space: pre-wrap;
   word-wrap: break-word;
@@ -422,6 +422,13 @@ mark {
 
 .markdown-highlight mark.speaking {
   background: #4da3ff;
+}
+
+.markdown-highlight mark.typo {
+  background: transparent;
+  text-decoration: underline wavy #e04b4b;
+  text-decoration-thickness: 2px;
+  text-underline-offset: 2px;
 }
 
 #review-markdown {
