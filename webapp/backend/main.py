@@ -14,12 +14,13 @@ import threading
 import uuid
 from urllib.parse import quote
 
+import requests
 from fastapi import FastAPI, File, Form, HTTPException, Request, Response, UploadFile
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import book_compiler, categorize, convert, db, review
+from . import book_compiler, categorize, convert, db, review, tts
 
 app = FastAPI(title="AjanDB")
 
@@ -40,6 +41,17 @@ def get_image(filename: str):
     if not os.path.isfile(path):
         raise HTTPException(404, "Image not found")
     return FileResponse(path, media_type="image/jpeg")
+
+
+@app.get("/audio/{filename}")
+def get_audio(filename: str):
+    """Serves generated speech audio (see tts.py) - same pattern as
+    get_image above: a plain route reading tts.AUDIO_DIR fresh on every
+    request, not a StaticFiles mount, so tests can monkeypatch it."""
+    path = os.path.join(tts.AUDIO_DIR, os.path.basename(filename))
+    if not os.path.isfile(path):
+        raise HTTPException(404, "Audio not found")
+    return FileResponse(path, media_type="audio/mpeg")
 
 
 def _resolve_client_key(provider: str | None, anthropic_key: str | None,
@@ -335,6 +347,28 @@ def review_cancel(session_id: str):
         return review.cancel(session_id)
     except KeyError:
         raise HTTPException(404, "Unknown review session")
+
+
+class TTSRequest(BaseModel):
+    text: str
+    azure_speech_key: str | None = None  # typed into the frontend - stored only in the browser
+    azure_speech_region: str | None = None
+
+
+@app.post("/api/tts")
+def synthesize_speech(req: TTSRequest):
+    """Generates (or reuses a cached) speech audio file for `req.text` via
+    Azure Speech - see tts.py. Returns {"audio_url": "/audio/<hash>.mp3"}."""
+    if not req.text.strip():
+        raise HTTPException(400, "text is required")
+    try:
+        audio_url = tts.get_or_synthesize(
+            req.text, region=req.azure_speech_region, api_key=req.azure_speech_key)
+    except RuntimeError as e:
+        raise HTTPException(503, str(e))
+    except requests.HTTPError as e:
+        raise HTTPException(502, f"TTS provider error: {e}")
+    return {"audio_url": audio_url}
 
 
 @app.get("/api/documents")

@@ -599,3 +599,72 @@ def test_export_book_rewrites_image_links_to_absolute_urls(tmp_path, monkeypatch
     image_resp = client.get(image_url)
     assert image_resp.status_code == 200
     assert image_resp.headers["content-type"] == "image/jpeg"
+
+
+def test_tts_endpoint_returns_audio_url(tmp_path, monkeypatch):
+    client = _client(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        main_module.tts, "get_or_synthesize",
+        lambda text, region=None, api_key=None: "/audio/fake-hash.mp3")
+
+    resp = client.post("/api/tts", json={"text": "Hello there"})
+
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == {"audio_url": "/audio/fake-hash.mp3"}
+
+
+def test_tts_endpoint_rejects_empty_text(tmp_path, monkeypatch):
+    client = _client(tmp_path, monkeypatch)
+    resp = client.post("/api/tts", json={"text": "   "})
+    assert resp.status_code == 400
+
+
+def test_tts_endpoint_returns_503_without_azure_key(tmp_path, monkeypatch):
+    client = _client(tmp_path, monkeypatch)
+    monkeypatch.delenv("AZURE_SPEECH_KEY", raising=False)
+    monkeypatch.delenv("AZURE_SPEECH_REGION", raising=False)
+
+    resp = client.post("/api/tts", json={"text": "Hello there"})
+
+    assert resp.status_code == 503
+
+
+def test_tts_endpoint_passes_browser_supplied_key_through(tmp_path, monkeypatch):
+    client = _client(tmp_path, monkeypatch)
+    captured = {}
+
+    def fake_get_or_synthesize(text, region=None, api_key=None):
+        captured["region"] = region
+        captured["api_key"] = api_key
+        return "/audio/fake-hash.mp3"
+
+    monkeypatch.setattr(main_module.tts, "get_or_synthesize", fake_get_or_synthesize)
+
+    resp = client.post("/api/tts", json={
+        "text": "Hello there",
+        "azure_speech_key": "browser-key",
+        "azure_speech_region": "eastus",
+    })
+
+    assert resp.status_code == 200, resp.text
+    assert captured == {"region": "eastus", "api_key": "browser-key"}
+
+
+def test_audio_endpoint_serves_cached_file(tmp_path, monkeypatch):
+    client = _client(tmp_path, monkeypatch)
+    import os
+    os.makedirs(main_module.tts.AUDIO_DIR, exist_ok=True)
+    with open(os.path.join(main_module.tts.AUDIO_DIR, "fake-hash.mp3"), "wb") as f:
+        f.write(b"fake-mp3-bytes")
+
+    resp = client.get("/audio/fake-hash.mp3")
+
+    assert resp.status_code == 200
+    assert resp.headers["content-type"] == "audio/mpeg"
+    assert resp.content == b"fake-mp3-bytes"
+
+
+def test_audio_endpoint_404_for_missing_file(tmp_path, monkeypatch):
+    client = _client(tmp_path, monkeypatch)
+    resp = client.get("/audio/does-not-exist.mp3")
+    assert resp.status_code == 404

@@ -5,7 +5,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import pytest
 
-from backend import convert
+from backend import convert, tts
 
 
 @pytest.fixture(autouse=True)
@@ -17,3 +17,10 @@ def _isolate_images_dir(tmp_path, monkeypatch):
     for every test instead, applied globally here rather than per test
     file since the whole test suite can end up exercising this path."""
     monkeypatch.setattr(convert, "IMAGES_DIR", str(tmp_path / "images"))
+
+
+@pytest.fixture(autouse=True)
+def _isolate_audio_dir(tmp_path, monkeypatch):
+    """Same reasoning as _isolate_images_dir, for tts.py's generated-speech
+    cache under webapp/data/audio/."""
+    monkeypatch.setattr(tts, "AUDIO_DIR", str(tmp_path / "audio"))

@@ -9,3 +9,4 @@ opencv-python-headless
 langdetect
 pytesseract
 pythainlp
+requests

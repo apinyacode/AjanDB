@@ -1,8 +1,12 @@
 // --- API keys: browser-local only, never sent anywhere but this page's own backend ---
 const LS_ANTHROPIC_KEY = "ajandb_anthropic_key";
 const LS_OPENAI_KEY = "ajandb_openai_key";
+const LS_AZURE_SPEECH_KEY = "ajandb_azure_speech_key";
+const LS_AZURE_SPEECH_REGION = "ajandb_azure_speech_region";
 const anthropicKeyInput = document.getElementById("anthropic-key-input");
 const openaiKeyInput = document.getElementById("openai-key-input");
+const azureSpeechKeyInput = document.getElementById("azure-speech-key-input");
+const azureSpeechRegionInput = document.getElementById("azure-speech-region-input");
 const keyStatus = document.getElementById("key-status");
 
 function safeLocalStorage() {
@@ -23,6 +27,8 @@ function loadStoredKeys() {
   }
   anthropicKeyInput.value = storage.getItem(LS_ANTHROPIC_KEY) || "";
   openaiKeyInput.value = storage.getItem(LS_OPENAI_KEY) || "";
+  azureSpeechKeyInput.value = storage.getItem(LS_AZURE_SPEECH_KEY) || "";
+  azureSpeechRegionInput.value = storage.getItem(LS_AZURE_SPEECH_REGION) || "";
 }
 loadStoredKeys();
 
@@ -35,13 +41,19 @@ function persistKey(input, storageKey) {
 }
 persistKey(anthropicKeyInput, LS_ANTHROPIC_KEY);
 persistKey(openaiKeyInput, LS_OPENAI_KEY);
+persistKey(azureSpeechKeyInput, LS_AZURE_SPEECH_KEY);
+persistKey(azureSpeechRegionInput, LS_AZURE_SPEECH_REGION);
 
 document.getElementById("clear-keys-btn").addEventListener("click", () => {
   anthropicKeyInput.value = "";
   openaiKeyInput.value = "";
+  azureSpeechKeyInput.value = "";
+  azureSpeechRegionInput.value = "";
   if (storage) {
     storage.removeItem(LS_ANTHROPIC_KEY);
     storage.removeItem(LS_OPENAI_KEY);
+    storage.removeItem(LS_AZURE_SPEECH_KEY);
+    storage.removeItem(LS_AZURE_SPEECH_REGION);
   }
   keyStatus.textContent = "Cleared.";
   setTimeout(() => { keyStatus.textContent = ""; }, 2000);
@@ -51,6 +63,13 @@ function currentApiKeys() {
   return {
     anthropic_api_key: anthropicKeyInput.value.trim() || undefined,
     openai_api_key: openaiKeyInput.value.trim() || undefined,
+  };
+}
+
+function currentAzureKeys() {
+  return {
+    azure_speech_key: azureSpeechKeyInput.value.trim() || undefined,
+    azure_speech_region: azureSpeechRegionInput.value.trim() || undefined,
   };
 }
 
@@ -303,15 +322,17 @@ reviewMarkdown.addEventListener("scroll", () => {
   reviewMarkdownHighlight.scrollLeft = reviewMarkdown.scrollLeft;
 });
 
-// --- Read aloud: speaks the converted text paragraph by paragraph (the
-// browser's own text-to-speech, no API/cost involved), highlighting each
-// paragraph in the overlay above as it's spoken. Embedded images (see
-// convert.py) are skipped entirely - reading out a wall of base64 would be
-// both useless and slow. Paragraph, not word-level, granularity: the Web
-// Speech API's word-boundary events are unreliable across browsers and
-// especially for non-Latin scripts like Thai, which this app's OCR output
-// often contains - a whole paragraph highlighted at a time is a much more
-// robust "follow along" signal than a jittery per-word one. ---
+// --- Read aloud: speaks the converted text paragraph by paragraph via the
+// backend's /api/tts endpoint (server-side Azure Speech - see tts.py),
+// highlighting each paragraph in the overlay above as it's spoken. Server-
+// side rather than the browser's own speechSynthesis: native voice
+// availability/quality varies wildly by OS/browser, especially for Thai,
+// so this way every tester hears the same voice. Embedded images (see
+// convert.py) are skipped entirely - there's nothing to read there.
+// Paragraph, not word-level, granularity: reliable word-boundary timing
+// from streamed audio would need a whole different (word-timestamp) API
+// response; a whole paragraph highlighted at a time is a simple, robust
+// "follow along" signal without that complexity. ---
 const reviewReadAloudBtn = document.getElementById("review-read-aloud-btn");
 const _EMBEDDED_IMAGE_LINE_RE = /^!\[[^\]]*\]\((\/images\/[^)]+|data:image\/[a-zA-Z0-9.+-]+;base64,[A-Za-z0-9+/=]+)\)$/;
 
@@ -319,8 +340,9 @@ let reviewSpeakingSegment = null;
 let ttsSegments = [];
 let ttsIndex = -1;
 let ttsSpeaking = false;
+let reviewAudioEl = null;
 
-function speakNextSegment() {
+async function speakNextSegment() {
   ttsIndex++;
   if (!ttsSpeaking || ttsIndex >= ttsSegments.length) {
     stopReadAloud();
@@ -328,17 +350,26 @@ function speakNextSegment() {
   }
   reviewSpeakingSegment = ttsSegments[ttsIndex];
   updateReviewHighlight();
-  const utterance = new SpeechSynthesisUtterance(reviewSpeakingSegment);
-  utterance.onend = speakNextSegment;
-  utterance.onerror = speakNextSegment;
-  window.speechSynthesis.speak(utterance);
+  try {
+    const res = await fetch("/api/tts", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text: reviewSpeakingSegment, ...currentAzureKeys() }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || "Text-to-speech request failed");
+    if (!ttsSpeaking) return;  // stopped while that request was in flight
+    reviewAudioEl = new Audio(data.audio_url);
+    reviewAudioEl.onended = speakNextSegment;
+    reviewAudioEl.onerror = speakNextSegment;
+    await reviewAudioEl.play();
+  } catch (err) {
+    reviewStatus.textContent = `Read aloud error: ${err.message}`;
+    stopReadAloud();
+  }
 }
 
 function startReadAloud() {
-  if (!("speechSynthesis" in window)) {
-    reviewStatus.textContent = "Text-to-speech isn't supported in this browser.";
-    return;
-  }
   ttsSegments = reviewMarkdown.value
     .split("\n\n")
     .map((seg) => seg.trim())
@@ -356,7 +387,10 @@ function startReadAloud() {
 function stopReadAloud() {
   ttsSpeaking = false;
   reviewSpeakingSegment = null;
-  window.speechSynthesis.cancel();
+  if (reviewAudioEl) {
+    reviewAudioEl.pause();
+    reviewAudioEl = null;
+  }
   reviewReadAloudBtn.textContent = "🔊 Read aloud";
   updateReviewHighlight();
 }

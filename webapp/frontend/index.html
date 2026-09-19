@@ -21,10 +21,11 @@
   <p class="hint small">
     Stored only in <strong>this browser's</strong> local storage — never sent anywhere except
     with your own requests to this page's backend, and never saved server-side or in the
-    database. Neither key is the same as a claude.ai or ChatGPT Plus subscription; both are
-    separate, billed-by-usage credentials from that provider's own developer console
-    (console.anthropic.com / platform.openai.com). Leave both blank to fall back to whatever
-    the backend's own environment has configured.
+    database. None of these are the same as a claude.ai/ChatGPT Plus subscription or an Azure
+    account login; all are separate, billed-by-usage credentials from that provider's own
+    developer console (console.anthropic.com / platform.openai.com / Azure Portal's Speech
+    resource). Leave blank to fall back to whatever the backend's own environment has
+    configured.
   </p>
   <div class="row">
     <label for="anthropic-key-input">Anthropic key</label>
@@ -33,6 +34,14 @@
   <div class="row">
     <label for="openai-key-input">OpenAI key</label>
     <input type="password" id="openai-key-input" placeholder="sk-..." autocomplete="off">
+  </div>
+  <div class="row">
+    <label for="azure-speech-key-input">Azure Speech key</label>
+    <input type="password" id="azure-speech-key-input" placeholder="for Read aloud" autocomplete="off">
+  </div>
+  <div class="row">
+    <label for="azure-speech-region-input">Azure Speech region</label>
+    <input type="text" id="azure-speech-region-input" placeholder="e.g. eastus" autocomplete="off">
   </div>
   <div class="row">
     <button id="clear-keys-btn" type="button" class="ghost">Clear stored keys</button>

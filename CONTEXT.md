@@ -75,6 +75,14 @@ group chunks by `(source_filename, total_pages)` and dedupe re-uploaded pages vi
 `_LATEST_PER_PAGE_CTE` (most-recent row per page wins) — re-uploading doesn't delete the
 old row, it just becomes an unused extra one that browsing/export ignore.
 
+**Text-to-speech** (`webapp/backend/tts.py`) — `get_or_synthesize(text)` fetches an Azure
+Speech access token, POSTs SSML to Azure's TTS REST endpoint, and caches the returned MP3
+under `webapp/data/audio/<sha256-hash-of-text>.mp3`, mirroring `convert.py`'s image-caching
+pattern exactly (same hash-by-content-then-check-if-file-exists shape). Voice is chosen by
+scanning the text for Thai-script characters rather than trusting a caller-supplied language
+hint. Served by a plain `GET /audio/{filename}` route (same reasoning as `/images/{filename}`
+— not a `StaticFiles` mount, so tests can monkeypatch the audio directory).
+
 **Frontend** (`webapp/frontend/app.js` + `index.html` + `style.css`) — no framework, no
 build step. Central technique is a **highlight-overlay**: an `aria-hidden` div sits behind
 the editable review `<textarea>`, sharing identical font/padding/box-sizing, rendering the
@@ -97,10 +105,16 @@ flagged span makes its highlight disappear once the edit no longer matches.
 - **Real `.jpg` image storage** — images/handwriting/uncertain regions are saved as actual
   files (not base64) in reading order, deduped by content hash. (This replaced an earlier
   base64-embedded approach after explicit feedback that files-on-disk were preferable.)
-- **Read Aloud (TTS)** — browser-native `SpeechSynthesisUtterance`, paragraph by paragraph
-  (word-level highlighting was skipped as unreliable across browsers, especially for Thai);
-  the currently-spoken paragraph is highlighted in a second colour via the same overlay.
-  Embedded image lines are skipped rather than read aloud as a URL.
+- **Read Aloud (TTS)** — server-side via Azure Speech (`webapp/backend/tts.py`), paragraph
+  by paragraph (word-level highlighting was skipped as unreliable across browsers, especially
+  for Thai); the currently-spoken paragraph is highlighted in a second colour via the same
+  overlay. Embedded image lines are skipped rather than read aloud as a URL. Voice (Thai vs.
+  English neural voice) is picked automatically from the text itself (presence of Thai-script
+  characters), not a language hint from the frontend, since a page routinely mixes both per
+  paragraph. Generated audio is cached under `data/audio/<sha256-hash-of-text>.mp3` — the
+  same dedup pattern `convert.py` uses for images — so replaying a paragraph never re-hits
+  the billed API. Originally browser-native `SpeechSynthesisUtterance`; replaced because
+  native voice availability/quality varies wildly by OS/browser, especially for Thai.
 - **Verify with second model** — opt-in cross-check of a flagged page against a *different*
   vision-LLM provider than the one used originally; shows a word-level diff
   (`difflib.SequenceMatcher` on whitespace-preserving tokens) and an agreement percentage.
@@ -162,18 +176,21 @@ correct from passing tests alone.
 
 ## Current state
 
-**169 tests pass** (42 in `pdf_to_docx_pipeline`, 127 in `webapp`), covering: the SQLite/FTS5
+**181 tests pass** (42 in `pdf_to_docx_pipeline`, 139 in `webapp`), covering: the SQLite/FTS5
 layer and duplicate-page dedup, per-page/per-character-budget chunking and image handling,
 category suggestion with graceful no-key fallback, the book compiler's retrieval and error
 handling for both providers, the review session state machine (including recovery from a
-failed page conversion and the second-opinion word-diff), Thai spell-checking, and the
-FastAPI endpoints via `TestClient`.
+failed page conversion and the second-opinion word-diff), Thai spell-checking, server-side
+TTS (voice selection, caching, the token-fetch + synthesize call chain, the `/api/tts` and
+`/audio/{filename}` endpoints — all against a mocked Azure client, no billed calls in CI),
+and the FastAPI endpoints via `TestClient`.
 
 **Shipped, in build order:** upload/search/chat webapp → per-page chunking with OCR
 confidence → async uploads → page-by-page review mode → live progress console → book
 browsing/export → confidence highlighting → image embedding (base64, then corrected to real
 `.jpg` files) → read-aloud with sync highlighting → verify-with-second-model → Thai
-spell-check + font-size bump → **beta launch, Phase 1** (`webapp/Dockerfile`, see below).
+spell-check + font-size bump → **beta launch Phase 1** (`webapp/Dockerfile`) → **beta launch
+Phase 2** (server-side TTS via Azure Speech, see below).
 
 **Known limitations:**
 
@@ -243,6 +260,18 @@ spell-check + font-size bump → **beta launch, Phase 1** (`webapp/Dockerfile`, 
   already be installed in the dev venvs, e.g. as a manual install or another package's
   transitive pull) — a fresh install from `requirements.txt` alone would have failed at
   import time. Added explicitly.
+- **Read Aloud's actual audio quality wasn't verified against a real Azure key** in the
+  sandbox this was built in (no live network path to Azure was exercised there either) —
+  `tts.py`'s HTTP calls, caching, and the frontend's fetch→`Audio`→highlight chain were all
+  verified end-to-end with the Azure call itself mocked (unit tests plus a live Playwright
+  click-through serving a pre-cached placeholder file in place of a real synthesis call).
+  Do an actual listen test on real Thai and English text with a live `AZURE_SPEECH_KEY`
+  before considering this feature done for testers.
+- Read Aloud makes one Azure API call per not-yet-cached paragraph — a full page of
+  never-before-read text costs that many calls. Fine for a personal beta; worth knowing if
+  usage or cost ever needs watching.
+- No cache eviction for `data/audio/` (same tradeoff as `data/images/` above) — generated
+  clips accumulate indefinitely.
 
 **Beta launch task list — status** (see `AjanDB_beta_launch_tasks.md` if still around, or
 ask for it again): three phases — (1) hosting readiness, (2) server-side TTS, (3)
@@ -252,11 +281,15 @@ multi-signal "likely wrong" flagging.
   stable URL/TLS, scheduled backup, live smoke test against a deployed host) are on hold
   pending a host choice (Render/Railway/VPS) — each depends on host-specific config this
   doc can't usefully guess at ahead of that decision.
-- **Phase 2** (server-side TTS, Azure Speech) — not yet started.
+- **Phase 2** (server-side TTS, Azure Speech) — tasks #6-10 done: `tts.py` + `/api/tts` +
+  `/audio/{filename}`, caching by text hash, frontend swapped off
+  `SpeechSynthesisUtterance`, tests mocking the Azure call. Real-key listen test still
+  outstanding (see Known limitations above).
 - **Phase 3** (multi-signal flagging) — not yet started.
 
-**Not yet done / natural next steps:** Phase 1 tasks #2-5 (needs a host decision), then
-Phases 2-3 of the beta launch task list above.
+**Not yet done / natural next steps:** a real-Azure-key listen test for Phase 2 (build is
+done, quality unverified); Phase 1 tasks #2-5 (needs a host decision); then Phase 3 of the
+beta launch task list.
 
 ## Repository and links
 

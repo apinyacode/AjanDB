@@ -10,7 +10,7 @@ searchable markdown, and compiling a book from whatever matches a topic.
   vision-LLM call for messy scans/non-Latin scripts).
 - **Page-by-page review** (optional, PDF only) — approve or edit each page's converted
   text before it's saved, with low-confidence text and Thai spelling flagged inline,
-  read-aloud, and an opt-in second-model cross-check.
+  server-side read-aloud (Azure Speech), and an opt-in second-model cross-check.
 - **Data Search** — full-text search (SQLite FTS5) plus a book browser with per-book
   `.md` export.
 - **Data Generation** — synthesises a new markdown book from stored content matching a
@@ -38,6 +38,14 @@ The Vision-LLM engine and Data Generation need an API key, either typed into the
 ```bash
 export ANTHROPIC_API_KEY=sk-ant-...   # for the Claude option
 export OPENAI_API_KEY=sk-...          # for the GPT option
+```
+
+Read Aloud (in page-by-page review) needs an Azure Speech key/region the same way — typed
+into the "API Keys" panel, or:
+
+```bash
+export AZURE_SPEECH_KEY=...
+export AZURE_SPEECH_REGION=eastus     # whichever region your Speech resource is in
 ```
 
 Alternatively, `bash deploy.sh` installs system dependencies, creates the venv, and starts
