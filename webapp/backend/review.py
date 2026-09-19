@@ -29,10 +29,12 @@ State machine per session:
     that's just waiting for approval.
 """
 import base64
+import concurrent.futures
 import difflib
 import os
 import re
 import threading
+import time
 import uuid
 
 from . import categorize, convert, db, spellcheck
@@ -225,6 +227,50 @@ def _openai_logprob_flags(png_bytes: bytes, model: str, api_key: str) -> list[st
     return flags
 
 
+# A page's own primary conversion must always be allowed to take however
+# long a model call takes - that's the transcription the reviewer is there
+# to see, not optional. The cross-checks below are different: each one is
+# an extra API call *on top of* that, stacking on the very pages where the
+# primary call was already slowest (vision-engine pages) - run
+# sequentially, two or three of them could easily push a single review
+# request past a tunnel/proxy's own (often much shorter) timeout, which
+# surfaces to the reviewer as a broken "<!DOCTYPE ...> is not valid JSON"
+# error instead of a slow-but-working page. So: run every API-calling
+# cross-check concurrently rather than one after another, and give up on
+# any that hasn't finished within this shared budget - a cross-check that
+# times out is simply skipped (logged, not an error), never a reason to
+# fail or delay the page itself.
+_CROSS_CHECK_TIMEOUT_SECONDS = 20
+
+
+def _run_cross_checks_with_timeout(jobs: list) -> list[list[str]]:
+    """Runs every zero-arg callable in `jobs` in its own thread, all started
+    at once, and collects results within a single shared
+    _CROSS_CHECK_TIMEOUT_SECONDS budget total (not per job) - so queuing up
+    more cross-checks never multiplies how long a reviewer waits. A job
+    that raises or doesn't finish in time contributes no flags rather than
+    failing the whole page."""
+    if not jobs:
+        return []
+    pool = concurrent.futures.ThreadPoolExecutor(max_workers=len(jobs))
+    futures = [pool.submit(job) for job in jobs]
+    deadline = time.monotonic() + _CROSS_CHECK_TIMEOUT_SECONDS
+    results = []
+    try:
+        for future in futures:
+            remaining = max(0.0, deadline - time.monotonic())
+            try:
+                results.append(future.result(timeout=remaining))
+            except Exception:
+                results.append([])
+    finally:
+        # Don't block on stragglers - an abandoned thread's API call just
+        # finishes in the background and its result is discarded; waiting
+        # here would defeat the entire point of the timeout above.
+        pool.shutdown(wait=False)
+    return results
+
+
 def _convert_one_page(session: dict, page_index: int) -> dict:
     """Extracts, converts, and renders a preview image for exactly one page
     of the session's source PDF. Any page whose own confidence is below
@@ -232,7 +278,9 @@ def _convert_one_page(session: dict, page_index: int) -> dict:
     disagreement spans are unioned into flagged_snippets alongside (not
     instead of) the original per-line confidence flags, since no single
     signal here is fully trustworthy on its own (see CONTEXT.md's Known
-    limitations for the cost/coverage tradeoffs of each)."""
+    limitations for the cost/coverage tradeoffs of each). The API-calling
+    checks run concurrently, capped at _CROSS_CHECK_TIMEOUT_SECONDS total -
+    see that constant's comment for why."""
     tmp_pdf = convert.extract_single_page_pdf(session["pdf_path"], page_index)
     try:
         png_bytes = convert.render_page_preview(tmp_pdf, 0)
@@ -249,11 +297,13 @@ def _convert_one_page(session: dict, page_index: int) -> dict:
 
     extra_flags = []
     if chunk["confidence"] is not None and chunk["confidence"] < 100:
-        extra_flags += _cross_provider_disagreement_flags(session, page_index, chunk)
+        jobs = [lambda: _cross_provider_disagreement_flags(session, page_index, chunk)]
         if session["engine"] == "vision":
             extra_flags += _tesseract_cross_check_flags(png_bytes, chunk["markdown"], session["langs"])
             if (session["provider"] or "anthropic") == "openai":
-                extra_flags += _openai_logprob_flags(png_bytes, session["model"], session["api_key"])
+                jobs.append(lambda: _openai_logprob_flags(png_bytes, session["model"], session["api_key"]))
+        for flags in _run_cross_checks_with_timeout(jobs):
+            extra_flags += flags
 
     flagged_snippets = _dedup_flags(chunk.get("flagged_snippets", []) + extra_flags)
 

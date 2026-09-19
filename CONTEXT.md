@@ -127,6 +127,19 @@ flagged span makes its highlight disappear once the edit no longer matches.
   the frontend; a disagreement from #2-4 alone (even with a high self-reported confidence
   score) is itself enough to set `needs_review`. Highlighted via the same overlay technique
   as before; fixing a flagged span makes its highlight disappear.
+
+  **Bounded, concurrent cross-checks** (`review._run_cross_checks_with_timeout`) — #2 and #4
+  are each an extra API call stacked on top of the page's own primary conversion, on exactly
+  the pages where that primary call is already slowest (vision-engine pages); run
+  sequentially, this was long enough on a real deployment to push a single review-page
+  request past a tunnel/proxy's own timeout, which surfaced to the reviewer as a broken
+  `<!DOCTYPE ...> is not valid JSON` error instead of a slow-but-working page (a real bug hit
+  in beta testing, not a hypothetical). Fixed by running every API-calling cross-check
+  concurrently in its own thread, capped at one shared `_CROSS_CHECK_TIMEOUT_SECONDS` (20s)
+  budget total rather than per-check - a cross-check that doesn't finish in time is simply
+  abandoned (skipped, not an error; its thread keeps running in the background and its result
+  is discarded once it does finish). The page's own primary conversion is never subject to
+  this budget - only the optional cross-checks are.
 - **Real `.jpg` image storage** — images/handwriting/uncertain regions are saved as actual
   files (not base64) in reading order, deduped by content hash. (This replaced an earlier
   base64-embedded approach after explicit feedback that files-on-disk were preferable.)
@@ -201,7 +214,7 @@ correct from passing tests alone.
 
 ## Current state
 
-**191 tests pass** (44 in `pdf_to_docx_pipeline`, 147 in `webapp`), covering: the SQLite/FTS5
+**194 tests pass** (44 in `pdf_to_docx_pipeline`, 150 in `webapp`), covering: the SQLite/FTS5
 layer and duplicate-page dedup, per-page/per-character-budget chunking and image handling,
 category suggestion with graceful no-key fallback, the book compiler's retrieval and error
 handling for both providers, the review session state machine (including recovery from a
@@ -236,7 +249,10 @@ flagging, see below).
     extra API call per flagged page (on top of the page's own original conversion call) -
     unlike the free, local Tesseract cross-check. This was an explicit, accepted tradeoff
     when promoting the check from opt-in to automatic (see the beta launch task list) -
-    watch usage/cost if a deployment processes many low-confidence pages.
+    watch usage/cost if a deployment processes many low-confidence pages. (The *timeout*
+    risk this originally caused - stacking these sequentially could exceed a tunnel/proxy's
+    own timeout - is fixed via bounded concurrent execution, see above; the cost itself is
+    unchanged and still worth watching.)
   - Multi-signal flagging only runs in the interactive page-by-page review flow
     (`review.py`), not the background bulk-upload path (`POST /api/upload` /
     `convert.convert_to_markdown`) - deliberately: bulk upload has no human pacing it

@@ -1,5 +1,6 @@
 import os
 import shutil
+import time
 
 import pytest
 
@@ -521,3 +522,44 @@ def test_multiple_flag_sources_on_the_same_span_are_unioned_without_duplicates(t
     assert page["flagged_snippets"].count("unclear") == 1
     assert len(page["flagged_snippets"]) == len(set(page["flagged_snippets"]))
     assert page["needs_review"] is True
+
+
+def test_cross_checks_run_concurrently_not_sequentially(monkeypatch):
+    """Regression test for the tunnel-timeout bug this was built to fix:
+    stacking the cross-provider check and the logprob check one after
+    another (a fixed 0.3s "API call" each) must NOT take ~0.6s total - they
+    need to run at the same time."""
+    monkeypatch.setattr(review, "_CROSS_CHECK_TIMEOUT_SECONDS", 5)
+
+    def slow_job():
+        time.sleep(0.3)
+        return ["flag-from-slow-job"]
+
+    started = time.monotonic()
+    results = review._run_cross_checks_with_timeout([slow_job, slow_job])
+    elapsed = time.monotonic() - started
+
+    assert results == [["flag-from-slow-job"], ["flag-from-slow-job"]]
+    assert elapsed < 0.55  # concurrent: ~0.3s: sequential would be ~0.6s+
+
+
+def test_cross_check_timeout_abandons_a_slow_job_without_blocking(monkeypatch):
+    monkeypatch.setattr(review, "_CROSS_CHECK_TIMEOUT_SECONDS", 0.2)
+
+    def hangs_forever():
+        time.sleep(30)
+        return ["should never see this"]
+
+    started = time.monotonic()
+    results = review._run_cross_checks_with_timeout([hangs_forever])
+    elapsed = time.monotonic() - started
+
+    assert results == [[]]  # abandoned job contributes no flags
+    assert elapsed < 5  # gave up around the timeout, did not wait for the 30s sleep
+
+
+def test_cross_check_exception_contributes_no_flags_without_failing_the_page():
+    def raises():
+        raise RuntimeError("simulated provider error")
+
+    assert review._run_cross_checks_with_timeout([raises]) == [[]]
