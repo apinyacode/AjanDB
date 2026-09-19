@@ -334,6 +334,29 @@ def test_dedup_flags_removes_exact_duplicates_preserving_order():
     assert review._dedup_flags(["a", "b", "a", "c", "b", ""]) == ["a", "b", "c"]
 
 
+def test_auto_validate_defaults_off_even_with_an_environment_key_configured(tmp_path, monkeypatch):
+    """auto_validate is an explicit opt-in (see start()'s docstring) - a
+    session that doesn't pass it must never run the cross-checks, even when
+    an env key that would otherwise satisfy them is present."""
+    monkeypatch.setenv("OPENAI_API_KEY", "fake-openai-key")
+
+    def fake_pdf_to_markdown_vision(pdf_path, provider=None, model=None, api_key=None):
+        if provider == "openai":
+            return [{"page_number": 1, "markdown": "The cat sat on the mat",
+                      "confidence": 96.0, "needs_review": False, "flagged_snippets": []}]
+        return [{"page_number": 1, "markdown": "The dog sat on the mat",
+                  "confidence": 97.0, "needs_review": False, "flagged_snippets": []}]
+
+    monkeypatch.setattr(review.convert, "pdf_to_markdown_vision", fake_pdf_to_markdown_vision)
+
+    started = review.start(_session_pdf(tmp_path), "book.pdf", engine="vision",
+                            provider="anthropic", api_key="fake-anthropic-key")  # auto_validate omitted
+    page = started["page"]
+
+    assert page["flagged_snippets"] == []
+    assert page["needs_review"] is False
+
+
 def test_auto_cross_check_flags_disagreement_even_with_high_self_reported_confidence(tmp_path, monkeypatch):
     monkeypatch.setenv("OPENAI_API_KEY", "fake-openai-key")
 
@@ -347,7 +370,7 @@ def test_auto_cross_check_flags_disagreement_even_with_high_self_reported_confid
     monkeypatch.setattr(review.convert, "pdf_to_markdown_vision", fake_pdf_to_markdown_vision)
 
     started = review.start(_session_pdf(tmp_path), "book.pdf", engine="vision",
-                            provider="anthropic", api_key="fake-anthropic-key")
+                            provider="anthropic", api_key="fake-anthropic-key", auto_validate=True)
     page = started["page"]
 
     assert page["confidence"] == 97.0  # each provider's own self-reported confidence was high
@@ -374,7 +397,7 @@ def test_auto_cross_check_is_silently_skipped_without_an_environment_key(tmp_pat
     monkeypatch.setattr(review.convert, "pdf_to_markdown_vision", fake_pdf_to_markdown_vision)
 
     started = review.start(_session_pdf(tmp_path), "book.pdf", engine="vision",
-                            provider="anthropic", api_key="fake-anthropic-key")
+                            provider="anthropic", api_key="fake-anthropic-key", auto_validate=True)
     page = started["page"]
 
     assert page["flagged_snippets"] == []  # no env key configured -> cross-check never ran
@@ -398,7 +421,7 @@ def test_tesseract_cross_check_flags_disagreement_for_vision_engine_pages(tmp_pa
     monkeypatch.setattr(review.convert, "pdf_to_markdown_vision", fake_pdf_to_markdown_vision)
 
     started = review.start(_session_pdf(tmp_path), "book.pdf", engine="vision",
-                            provider="anthropic", api_key="fake-anthropic-key")
+                            provider="anthropic", api_key="fake-anthropic-key", auto_validate=True)
     page = started["page"]
 
     assert page["flagged_snippets"]  # Tesseract's disagreeing text got flagged, free/no API key needed
@@ -414,7 +437,7 @@ def test_tesseract_cross_check_does_not_run_for_classical_engine_pages(tmp_path,
     calls = []
     monkeypatch.setattr(review, "_tesseract_cross_check_flags", lambda *a, **k: calls.append(1) or [])
 
-    started = review.start(_session_pdf(tmp_path), "book.pdf", langs="eng+tha")
+    started = review.start(_session_pdf(tmp_path), "book.pdf", langs="eng+tha", auto_validate=True)
     review.approve(started["session_id"])
 
     assert calls == []
@@ -456,7 +479,7 @@ def test_openai_logprob_check_flags_low_confidence_span(tmp_path, monkeypatch):
     monkeypatch.setattr(review.convert, "pdf_to_markdown_vision", fake_pdf_to_markdown_vision)
 
     started = review.start(_session_pdf(tmp_path), "book.pdf", engine="vision",
-                            provider="openai", api_key="fake-openai-key")
+                            provider="openai", api_key="fake-openai-key", auto_validate=True)
     page = started["page"]
 
     assert "garbled region" in page["flagged_snippets"]
@@ -485,7 +508,7 @@ def test_openai_logprob_check_does_not_run_for_anthropic_provider(tmp_path, monk
     monkeypatch.setattr(review.convert, "pdf_to_markdown_vision", fake_pdf_to_markdown_vision)
 
     started = review.start(_session_pdf(tmp_path), "book.pdf", engine="vision",
-                            provider="anthropic", api_key="fake-anthropic-key")
+                            provider="anthropic", api_key="fake-anthropic-key", auto_validate=True)
 
     assert calls == []
     assert started["page"]["flagged_snippets"] == []
@@ -512,7 +535,7 @@ def test_multiple_flag_sources_on_the_same_span_are_unioned_without_duplicates(t
     monkeypatch.setattr(review.convert, "pdf_to_markdown_vision", fake_pdf_to_markdown_vision)
 
     started = review.start(_session_pdf(tmp_path), "book.pdf", engine="vision",
-                            provider="anthropic", api_key="fake-anthropic-key")
+                            provider="anthropic", api_key="fake-anthropic-key", auto_validate=True)
     page = started["page"]
 
     # "unclear" was independently flagged by the original per-line confidence

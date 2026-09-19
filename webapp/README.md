@@ -9,10 +9,11 @@ searchable markdown, and compiling a book from whatever matches a topic.
   `../pdf_to_docx_pipeline` with a choice of engine (free local OCR, or a per-page
   vision-LLM call for messy scans/non-Latin scripts).
 - **Page-by-page review** (optional, PDF only) — approve or edit each page's converted
-  text before it's saved. Any page below 100% confidence is automatically cross-checked
-  against a second model/engine (plus an on-demand manual check too), with Thai spelling
-  and server-side read-aloud (Azure Speech) on top — see
-  [`../CONTEXT.md`](../CONTEXT.md)'s "Multi-signal 'likely wrong' flagging".
+  text before it's saved. Optional **Second-model validation** cross-checks any page below
+  100% confidence against a second model/engine (plus an on-demand manual check, always
+  available regardless of the toggle), with Thai spelling and toggleable server-side
+  read-aloud (Azure Speech) on top — see [`../CONTEXT.md`](../CONTEXT.md)'s "Multi-signal
+  'likely wrong' flagging".
 - **Data Search** — full-text search (SQLite FTS5) plus a book browser with per-book
   `.md` export.
 - **Data Generation** — synthesises a new markdown book from stored content matching a
@@ -42,14 +43,14 @@ export ANTHROPIC_API_KEY=sk-ant-...   # for the Claude option
 export OPENAI_API_KEY=sk-...          # for the GPT option
 ```
 
-Having *either* set also turns on automatic cross-checking in page-by-page review (see
-above) for any page below 100% confidence, at the cost of an extra API call per such page —
+Having *either* set is what lets page-by-page review's **Second-model validation** checkbox
+(unchecked by default — see the review options above) actually do anything for any page
+below 100% confidence, at the cost of an extra API call per such page when it's turned on —
 this applies even to classical-engine (otherwise free) sessions, since the cross-check
-always uses whichever of these two keys is available. There's no separate flag to disable
-just this piece; it follows whether a key is configured at all.
+always uses whichever of these two keys is available in the backend's environment.
 
-Read Aloud (in page-by-page review) needs an Azure Speech key/region the same way — typed
-into the "API Keys" panel, or:
+Read Aloud (in page-by-page review, its own **Enable Read aloud** checkbox) needs an Azure
+Speech key/region the same way — typed into the "API Keys" panel, or:
 
 ```bash
 export AZURE_SPEECH_KEY=...

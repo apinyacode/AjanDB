@@ -100,18 +100,19 @@ flagged span makes its highlight disappear once the edit no longer matches.
   editable markdown right) before saving; nothing hits the database until **Approve & Save**,
   and each approved page is saved immediately (not batched), so cancelling partway through
   a long book keeps everything approved so far.
-- **Multi-signal "likely wrong" flagging** (review flow only, not bulk upload — see below) —
-  `flagged_snippets` is now a *union* of up to four independent signals for any page below
-  100% confidence, not just the original per-line confidence flag, since no single signal is
-  fully trustworthy alone (see Known limitations):
-  1. **Per-line confidence** (original) — any text whose own OCR/vision confidence is <100%.
+- **Multi-signal "likely wrong" flagging** (review flow only, not bulk upload — see below;
+  opt-in via the Data Store tab's **Second-model validation** checkbox, off by default — see
+  below) — when turned on, `flagged_snippets` becomes a *union* of up to four independent
+  signals for any page below 100% confidence, not just the original per-line confidence flag,
+  since no single signal is fully trustworthy alone (see Known limitations):
+  1. **Per-line confidence** (original, always on regardless of the toggle) — any text whose
+     own OCR/vision confidence is <100%.
   2. **Automatic cross-provider check** (`review._cross_provider_disagreement_flags`) — a
      second vision-LLM call against whichever provider *wasn't* used for the primary
-     conversion, diffed the same way "Verify with second model" always has been; runs
-     automatically now, for *any* engine, not just on request. Always resolves its key from
-     the backend's environment (`ANTHROPIC_API_KEY`/`OPENAI_API_KEY`) — there's no
-     browser-supplied-key path for a provider the session isn't already using — so it's
-     silently skipped without one, never blocking a page.
+     conversion, diffed the same way "Verify with second model" always has been. Always
+     resolves its key from the backend's environment (`ANTHROPIC_API_KEY`/`OPENAI_API_KEY`) —
+     there's no browser-supplied-key path for a provider the session isn't already using — so
+     it's silently skipped without one, never blocking a page.
   3. **Tesseract cross-check** (`review._tesseract_cross_check_flags`, vision-engine pages
      only) — runs classical OCR on the same rendered page image already used for the
      vision-LLM pass and flags disagreements. Free and local, no API key needed, so it always
@@ -140,6 +141,14 @@ flagged span makes its highlight disappear once the edit no longer matches.
   abandoned (skipped, not an error; its thread keeps running in the background and its result
   is discarded once it does finish). The page's own primary conversion is never subject to
   this budget - only the optional cross-checks are.
+
+  **Opt-in toggle** — `review.start(..., auto_validate=False)` (default off; an earlier
+  version of this feature ran automatically whenever an env key was configured, with no way
+  to turn it off short of removing the key - that's what caused the tunnel-timeout bug
+  above). The Data Store tab's **Second-model validation** checkbox (`#auto-validate-checkbox`
+  in `index.html`, sent as the `auto_validate` form field to `POST /api/review/start`) is the
+  per-upload opt-in; it's disabled/unchecked until **Review each page before saving** itself
+  is checked, since it only means anything inside a review session.
 - **Real `.jpg` image storage** — images/handwriting/uncertain regions are saved as actual
   files (not base64) in reading order, deduped by content hash. (This replaced an earlier
   base64-embedded approach after explicit feedback that files-on-disk were preferable.)
@@ -153,6 +162,12 @@ flagged span makes its highlight disappear once the edit no longer matches.
   same dedup pattern `convert.py` uses for images — so replaying a paragraph never re-hits
   the billed API. Originally browser-native `SpeechSynthesisUtterance`; replaced because
   native voice availability/quality varies wildly by OS/browser, especially for Thai.
+  Toggleable per upload via the Data Store tab's **Enable Read aloud** checkbox
+  (`#enable-read-aloud-checkbox`, checked by default, disabled until review mode is on) -
+  a frontend-only gate (it just shows/hides the "🔊 Read aloud" button in `showReviewPage()`),
+  since the feature is already fully opt-in by nature - a reviewer has to click the button
+  for it to do anything - so this toggle is really just "hide the button entirely," e.g. for
+  a deployment with no Azure key configured at all.
 - **Verify with second model** — opt-in cross-check of a flagged page against a *different*
   vision-LLM provider than the one used originally; shows a word-level diff
   (`difflib.SequenceMatcher` on whitespace-preserving tokens) and an agreement percentage.
@@ -214,7 +229,7 @@ correct from passing tests alone.
 
 ## Current state
 
-**194 tests pass** (44 in `pdf_to_docx_pipeline`, 150 in `webapp`), covering: the SQLite/FTS5
+**196 tests pass** (44 in `pdf_to_docx_pipeline`, 152 in `webapp`), covering: the SQLite/FTS5
 layer and duplicate-page dedup, per-page/per-character-budget chunking and image handling,
 category suggestion with graceful no-key fallback, the book compiler's retrieval and error
 handling for both providers, the review session state machine (including recovery from a
@@ -238,21 +253,22 @@ flagging, see below).
 - **Vision-LLM confidence is the model's own self-reported estimate — explicitly *not*
   calibrated**, unlike Tesseract's real per-character score (well-calibrated as a *relative*
   ranking, not independently verified accuracy either). This is why flagging no longer relies
-  on it alone: any page below 100% confidence also goes through up to three independent
+  on it alone: any page below 100% confidence can also go through up to three independent
   cross-checks (cross-provider, Tesseract, GPT-4o logprobs - see "Multi-signal 'likely
-  wrong' flagging" above), and a disagreement from any of them sets `needs_review` even when
-  the page's own confidence score was high. Residual limitations of *that* approach:
+  wrong' flagging" above, opt-in via the **Second-model validation** checkbox), and a
+  disagreement from any of them sets `needs_review` even when the page's own confidence score
+  was high. Residual limitations of *that* approach:
   - All the cross-checks can still share the same blind spot (e.g. genuinely illegible
     handwriting) and confidently agree on the same wrong answer - agreement between
     signals is much stronger evidence than one score alone, but still isn't proof.
-  - The automatic cross-provider check and the GPT-4o logprob check each cost a real,
-    extra API call per flagged page (on top of the page's own original conversion call) -
-    unlike the free, local Tesseract cross-check. This was an explicit, accepted tradeoff
-    when promoting the check from opt-in to automatic (see the beta launch task list) -
-    watch usage/cost if a deployment processes many low-confidence pages. (The *timeout*
-    risk this originally caused - stacking these sequentially could exceed a tunnel/proxy's
-    own timeout - is fixed via bounded concurrent execution, see above; the cost itself is
-    unchanged and still worth watching.)
+  - The cross-provider check and the GPT-4o logprob check each cost a real, extra API call
+    per flagged page (on top of the page's own original conversion call) - unlike the free,
+    local Tesseract cross-check. This feature briefly ran automatically-by-default rather
+    than opt-in (see the beta launch task list), which is exactly what caused the
+    tunnel-timeout bug fixed above - it's opt-in again now specifically to put that
+    cost/latency tradeoff back in the reviewer's hands rather than triggering it silently
+    whenever a key happens to be configured. The bounded-concurrency fix above still applies
+    whenever it *is* turned on.
   - Multi-signal flagging only runs in the interactive page-by-page review flow
     (`review.py`), not the background bulk-upload path (`POST /api/upload` /
     `convert.convert_to_markdown`) - deliberately: bulk upload has no human pacing it

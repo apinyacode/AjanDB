@@ -309,6 +309,11 @@ mark {
   height: 1.1rem;
 }
 
+.checkbox-label:has(input:disabled) {
+  opacity: 0.5;
+  cursor: default;
+}
+
 .hidden { display: none; }
 
 .sr-only {

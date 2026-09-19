@@ -92,6 +92,16 @@ engineSelect.addEventListener("change", () => {
 });
 
 const reviewModeCheckbox = document.getElementById("review-mode-checkbox");
+const autoValidateCheckbox = document.getElementById("auto-validate-checkbox");
+const enableReadAloudCheckbox = document.getElementById("enable-read-aloud-checkbox");
+
+// Second-model validation and Read aloud only mean anything inside a
+// review session, so they stay disabled (and visually inert) until review
+// mode itself is turned on.
+reviewModeCheckbox.addEventListener("change", () => {
+  autoValidateCheckbox.disabled = !reviewModeCheckbox.checked;
+  enableReadAloudCheckbox.disabled = !reviewModeCheckbox.checked;
+});
 
 document.getElementById("upload-btn").addEventListener("click", async () => {
   const input = document.getElementById("file-input");
@@ -462,6 +472,7 @@ async function startReview(file) {
   formData.append("engine", engine);
   if (engine === "vision") formData.append("provider", uploadProviderSelect.value);
   if (categoryInput.value.trim()) formData.append("category", categoryInput.value.trim());
+  formData.append("auto_validate", autoValidateCheckbox.checked);
   const keys = currentApiKeys();
   if (keys.anthropic_api_key) formData.append("anthropic_api_key", keys.anthropic_api_key);
   if (keys.openai_api_key) formData.append("openai_api_key", keys.openai_api_key);
@@ -495,6 +506,7 @@ async function startReview(file) {
 function showReviewPage(page) {
   stopReadAloud();  // a new page replaced whatever was being read - don't keep reading the old one
   reviewPanel.classList.remove("hidden");
+  reviewReadAloudBtn.classList.toggle("hidden", !enableReadAloudCheckbox.checked);
   reviewRetryBtn.classList.add("hidden");
   reviewApproveBtn.disabled = false;
   reviewSkipBtn.disabled = false;

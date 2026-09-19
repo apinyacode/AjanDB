@@ -79,6 +79,18 @@
         Review each page before saving (PDF only)
       </label>
     </div>
+    <div class="row engine-row">
+      <label class="checkbox-label">
+        <input type="checkbox" id="auto-validate-checkbox" disabled>
+        Second-model validation — auto cross-check flagged pages (costs extra API calls)
+      </label>
+    </div>
+    <div class="row engine-row">
+      <label class="checkbox-label">
+        <input type="checkbox" id="enable-read-aloud-checkbox" checked disabled>
+        Enable Read aloud (needs an Azure Speech key)
+      </label>
+    </div>
     <p class="hint small">The vision engine and category auto-suggestion need an API key — set one in the <strong>API Keys</strong> panel above, or leave it to the backend's own environment.</p>
     <p id="upload-status" class="status"></p>
     <pre id="upload-console" class="console hidden"></pre>

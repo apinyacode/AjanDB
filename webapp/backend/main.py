@@ -240,6 +240,7 @@ async def review_start(
     category: str | None = Form(None),
     anthropic_api_key: str | None = Form(None),
     openai_api_key: str | None = Form(None),
+    auto_validate: bool = Form(False),
 ):
     """Starts a page-by-page review session: converts and returns page 1
     immediately, alongside a rendered preview image, so the frontend can
@@ -262,7 +263,7 @@ async def review_start(
     try:
         return review.start(
             tmp_path, file.filename, engine=engine, provider=provider, model=model,
-            langs=langs, category=category, api_key=api_key)
+            langs=langs, category=category, api_key=api_key, auto_validate=auto_validate)
     except ValueError as e:
         os.unlink(tmp_path)
         raise HTTPException(400, str(e))

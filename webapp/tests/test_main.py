@@ -313,6 +313,28 @@ def test_review_start_rejects_non_pdf(tmp_path, monkeypatch):
     assert resp.status_code == 400
 
 
+def test_review_start_passes_auto_validate_through_to_review_start(tmp_path, monkeypatch):
+    client = _client(tmp_path, monkeypatch)
+    captured = {}
+    real_start = main_module.review.start
+
+    def spy_start(*args, **kwargs):
+        captured["auto_validate"] = kwargs.get("auto_validate")
+        return real_start(*args, **kwargs)
+
+    monkeypatch.setattr(main_module.review, "start", spy_start)
+
+    resp = _start_review(client, auto_validate="true")
+    assert resp.status_code == 200, resp.text
+    assert captured["auto_validate"] is True
+    client.post(f"/api/review/{resp.json()['session_id']}/cancel")
+
+    resp2 = _start_review(client)  # omitted entirely -> defaults off
+    assert resp2.status_code == 200, resp2.text
+    assert captured["auto_validate"] is False
+    client.post(f"/api/review/{resp2.json()['session_id']}/cancel")
+
+
 def test_review_start_returns_first_page_and_saves_nothing(tmp_path, monkeypatch):
     client = _client(tmp_path, monkeypatch)
     resp = _start_review(client)

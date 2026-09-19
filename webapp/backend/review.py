@@ -273,14 +273,16 @@ def _run_cross_checks_with_timeout(jobs: list) -> list[list[str]]:
 
 def _convert_one_page(session: dict, page_index: int) -> dict:
     """Extracts, converts, and renders a preview image for exactly one page
-    of the session's source PDF. Any page whose own confidence is below
-    100% additionally runs through the cross-check functions above - their
-    disagreement spans are unioned into flagged_snippets alongside (not
-    instead of) the original per-line confidence flags, since no single
-    signal here is fully trustworthy on its own (see CONTEXT.md's Known
-    limitations for the cost/coverage tradeoffs of each). The API-calling
-    checks run concurrently, capped at _CROSS_CHECK_TIMEOUT_SECONDS total -
-    see that constant's comment for why."""
+    of the session's source PDF. When the session opted into it
+    (`auto_validate`, off by default - see start()), any page whose own
+    confidence is below 100% additionally runs through the cross-check
+    functions above - their disagreement spans are unioned into
+    flagged_snippets alongside (not instead of) the original per-line
+    confidence flags, since no single signal here is fully trustworthy on
+    its own (see CONTEXT.md's Known limitations for the cost/coverage
+    tradeoffs of each). The API-calling checks run concurrently, capped at
+    _CROSS_CHECK_TIMEOUT_SECONDS total - see that constant's comment for
+    why."""
     tmp_pdf = convert.extract_single_page_pdf(session["pdf_path"], page_index)
     try:
         png_bytes = convert.render_page_preview(tmp_pdf, 0)
@@ -296,7 +298,7 @@ def _convert_one_page(session: dict, page_index: int) -> dict:
     chunk = chunks[0]  # exactly one page in -> exactly one chunk out
 
     extra_flags = []
-    if chunk["confidence"] is not None and chunk["confidence"] < 100:
+    if session["auto_validate"] and chunk["confidence"] is not None and chunk["confidence"] < 100:
         jobs = [lambda: _cross_provider_disagreement_flags(session, page_index, chunk)]
         if session["engine"] == "vision":
             extra_flags += _tesseract_cross_check_flags(png_bytes, chunk["markdown"], session["langs"])
@@ -329,11 +331,20 @@ def _convert_one_page(session: dict, page_index: int) -> dict:
 
 def start(pdf_path: str, filename: str, engine: str = "classical", provider: str = None,
           model: str = None, langs: str = None, category: str = None,
-          api_key: str = None) -> dict:
+          api_key: str = None, auto_validate: bool = False) -> dict:
     """Begins a review session for `pdf_path` (already saved to a temp file
     by the caller - this module takes ownership of it and deletes it when
     the session ends, is cancelled, or this call fails). Converts and
-    returns page 1 immediately."""
+    returns page 1 immediately.
+
+    `auto_validate` (off by default - an explicit opt-in, not the same
+    "promoted to default" behavior an earlier version of this feature had)
+    turns on the automatic multi-signal cross-checks in _convert_one_page
+    for every page below 100% confidence in this session. Off by default
+    because those checks cost extra API calls and - even bounded and run
+    concurrently (see _run_cross_checks_with_timeout) - add real latency to
+    every low-confidence page; a reviewer who wants that tradeoff opts in
+    per upload via the frontend's "Second-model validation" checkbox."""
     total_pages = convert.get_pdf_page_count(pdf_path)
     if total_pages < 1:
         raise ValueError(f"{filename} has no pages")
@@ -348,6 +359,7 @@ def start(pdf_path: str, filename: str, engine: str = "classical", provider: str
         "model": model,
         "langs": langs,
         "api_key": api_key,
+        "auto_validate": bool(auto_validate),
         "category": (category or "").strip() or None,
         "total_pages": total_pages,
         "current_index": None,
@@ -356,6 +368,8 @@ def start(pdf_path: str, filename: str, engine: str = "classical", provider: str
         "log": [],
     }
     _log(session, f"Started: {filename} ({total_pages} page(s), engine={engine})")
+    if auto_validate:
+        _log(session, "Second-model validation: on")
     _log(session, f"Converting page 1/{total_pages}...")
 
     try:
