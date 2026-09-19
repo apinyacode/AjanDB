@@ -197,11 +197,14 @@ function renderConsole(lines) {
 // wrapped in <mark> - shared between the read-only chunk-card preview below
 // and the review-mode editable-textarea overlay further down. `groups` is
 // an array of {snippets, className} so more than one kind of highlight (a
-// low-confidence flag, a "currently being read aloud" segment) can render
+// Thai spelling flag, a "currently being read aloud" segment) can render
 // at once with different colours. Longest snippets are matched first so
-// one snippet that happens to contain a shorter one (e.g. a paragraph
-// containing an already-flagged sentence) doesn't get split into a
-// smaller, misleading highlight.
+// one snippet that happens to contain a shorter one doesn't get split into
+// a smaller, misleading highlight. (Confidence/multi-signal flags used to
+// be a group here too - dropped because highlighting large or near-whole-
+// page spans wasn't a useful "look here" signal; the confidence % and
+// "Needs review" badge above the editor still surface that a page needs
+// scrutiny, without carpeting the text in colour.)
 function renderHighlightedMarkdown(text, groups) {
   const classByText = new Map();
   (groups || []).forEach((g) => {
@@ -258,7 +261,7 @@ function renderChunks(container, chunks) {
     card.className = "chunk-card" + (chunk.needs_review ? " needs-review" : "");
     const confidenceText = chunk.confidence === null || chunk.confidence === undefined
       ? "n/a" : `${chunk.confidence}%`;
-    const body = renderMarkdownWithImages(chunk.markdown, [{ snippets: chunk.flagged_snippets }]);
+    const body = renderMarkdownWithImages(chunk.markdown, []);
     card.innerHTML =
       `<div class="chunk-meta">` +
       `<span>Page ${chunk.page_number}</span>` +
@@ -278,8 +281,7 @@ const reviewBadges = document.getElementById("review-badges");
 const reviewImage = document.getElementById("review-image");
 const reviewMarkdown = document.getElementById("review-markdown");
 const reviewMarkdownHighlight = document.getElementById("review-markdown-highlight");
-const reviewHighlightHint = document.getElementById("review-highlight-hint");
-const reviewTypoHint = document.getElementById("review-typo-hint");
+const spellcheckMenu = document.getElementById("spellcheck-menu");
 const reviewApproveBtn = document.getElementById("review-approve-btn");
 const reviewSkipBtn = document.getElementById("review-skip-btn");
 const reviewRetryBtn = document.getElementById("review-retry-btn");
@@ -295,41 +297,89 @@ const verifySuggestionHint = document.getElementById("verify-suggestion-hint");
 
 let reviewSessionId = null;
 let reviewTotalPages = 0;
-let reviewFlaggedSnippets = [];
 let reviewTypos = [];
 
 // Re-renders the highlight overlay from the textarea's *current* value, so
-// editing a flagged line (or a misspelled word) makes its highlight
-// disappear the moment the fix no longer matches the original - a natural
-// "you fixed it" signal without any extra bookkeeping. Also shows which
-// paragraph "Read aloud" (below) is currently speaking, in a different
-// colour. Thai spelling flags (see spellcheck.py) are a third, lower-
-// priority group - a typo inside an already-flagged low-confidence line
-// just shows as "flagged" (renderHighlightedMarkdown matches the longer
-// snippet first), since that line already has the reviewer's attention.
+// fixing a misspelled word makes its underline disappear the moment the
+// edit no longer matches the original - a natural "you fixed it" signal
+// without any extra bookkeeping. Also shows which paragraph "Read aloud"
+// (below) is currently speaking, in a different colour. Confidence/
+// multi-signal flags are deliberately NOT a group here - see
+// renderHighlightedMarkdown's comment for why.
 function updateReviewHighlight() {
   const text = reviewMarkdown.value;
   const stillPresentTypos = reviewTypos.filter((t) => text.includes(t.word));
   const groups = [
     { snippets: reviewSpeakingSegment ? [reviewSpeakingSegment] : [], className: "speaking" },
-    { snippets: reviewFlaggedSnippets, className: "flagged" },
     { snippets: stillPresentTypos.map((t) => t.word), className: "typo" },
   ];
   reviewMarkdownHighlight.innerHTML = renderHighlightedMarkdown(text, groups) + "\n";
-  const stillFlagged = reviewFlaggedSnippets.filter((s) => s && text.includes(s)).length;
-  reviewHighlightHint.textContent = stillFlagged
-    ? `${stillFlagged} highlighted section(s) below have lower-confidence or untranscribed text - check those first.`
-    : "";
-  reviewTypoHint.textContent = stillPresentTypos.length
-    ? "Possible Thai typo(s): " + stillPresentTypos
-        .map((t) => `"${t.word}"${t.suggestions.length ? ` → "${t.suggestions[0]}"` : ""}`)
-        .join(", ")
-    : "";
+  hideSpellcheckMenu();  // stale menu could point at a word/position that no longer matches
 }
 reviewMarkdown.addEventListener("input", updateReviewHighlight);
 reviewMarkdown.addEventListener("scroll", () => {
   reviewMarkdownHighlight.scrollTop = reviewMarkdown.scrollTop;
   reviewMarkdownHighlight.scrollLeft = reviewMarkdown.scrollLeft;
+  hideSpellcheckMenu();
+});
+
+// --- Inline spell-check corrections: click a red-underlined word for a
+// dropdown of pythainlp's suggestions (see spellcheck.py), word-processor
+// style, instead of a separate list of typos to cross-reference by hand.
+// The overlay div is pointer-events:none everywhere except mark.typo
+// itself (see style.css) - only clicks that land exactly on a flagged
+// word are intercepted here; everything else falls through to the
+// textarea underneath for normal editing. ---
+function hideSpellcheckMenu() {
+  spellcheckMenu.classList.add("hidden");
+  spellcheckMenu.innerHTML = "";
+}
+
+function showSpellcheckMenu(markEl, typoEntry) {
+  spellcheckMenu.innerHTML = "";
+  const suggestions = (typoEntry.suggestions || []).slice(0, 5);
+  if (!suggestions.length) {
+    const empty = document.createElement("div");
+    empty.className = "spellcheck-menu-empty";
+    empty.textContent = "No suggestions";
+    spellcheckMenu.appendChild(empty);
+  } else {
+    suggestions.forEach((suggestion) => {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.textContent = suggestion;
+      btn.addEventListener("click", () => {
+        // Every occurrence of this exact word, not just the one clicked -
+        // an OCR/vision-LLM typo is normally the same mistake wherever it
+        // recurs, and flagged_snippets-style matching is already by exact
+        // string throughout this app, not by position.
+        reviewMarkdown.value = reviewMarkdown.value.split(typoEntry.word).join(suggestion);
+        hideSpellcheckMenu();
+        updateReviewHighlight();
+      });
+      spellcheckMenu.appendChild(btn);
+    });
+  }
+  const rect = markEl.getBoundingClientRect();
+  spellcheckMenu.style.left = `${Math.round(rect.left)}px`;
+  spellcheckMenu.style.top = `${Math.round(rect.bottom + 4)}px`;
+  spellcheckMenu.classList.remove("hidden");
+}
+
+reviewMarkdownHighlight.addEventListener("click", (e) => {
+  const markEl = e.target.closest("mark.typo");
+  if (!markEl) return;
+  const typoEntry = reviewTypos.find((t) => t.word === markEl.textContent);
+  if (typoEntry) showSpellcheckMenu(markEl, typoEntry);
+});
+document.addEventListener("click", (e) => {
+  if (!spellcheckMenu.classList.contains("hidden") &&
+      !spellcheckMenu.contains(e.target) && !e.target.closest("mark.typo")) {
+    hideSpellcheckMenu();
+  }
+});
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape") hideSpellcheckMenu();
 });
 
 // --- Read aloud: speaks the converted text paragraph by paragraph via the
@@ -518,7 +568,6 @@ function showReviewPage(page) {
     (page.needs_review ? ` <span class="badge">Needs review</span>` : "");
   reviewImage.src = `data:image/png;base64,${page.image_base64}`;
   reviewMarkdown.value = page.markdown;
-  reviewFlaggedSnippets = page.flagged_snippets || [];
   reviewTypos = page.typos || [];
   updateReviewHighlight();
   reviewStatus.textContent = "";

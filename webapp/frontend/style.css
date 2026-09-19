@@ -380,11 +380,17 @@ mark {
 
 /* Overlay trick: an aria-hidden div sits exactly behind the textarea,
    sharing its font/padding/border/box-sizing so text wraps identically in
-   both - it renders the same text with <mark> around low-confidence spans
-   (transparent text, coloured background only), while the textarea on top
-   stays fully editable with the real text visible through its transparent
-   background. Editing invalidates a snippet's exact match automatically -
-   fix a flagged line and its highlight disappears on the next keystroke. */
+   both - it renders the same text with <mark> around the currently-spoken
+   paragraph and Thai spelling flags (transparent text, coloured
+   background/underline only), while the textarea on top stays fully
+   editable with the real text visible through its transparent background.
+   Editing invalidates a snippet's exact match automatically - fix a
+   flagged word and its underline disappears on the next keystroke. The
+   overlay sits ABOVE the textarea in stacking (z-index) specifically so a
+   typo <mark> can opt back into pointer events for its click-to-correct
+   menu (see updateReviewHighlight/showSpellcheckMenu in app.js) - every
+   other pixel of the overlay stays pointer-events:none, so clicks fall
+   through to the textarea underneath exactly as before. */
 .markdown-editor {
   position: relative;
   height: 65vh;
@@ -414,15 +420,12 @@ mark {
   border-color: transparent;
   pointer-events: none;
   overflow: hidden;
+  z-index: 2;
 }
 
 .markdown-highlight mark {
   color: transparent;
   border-radius: 2px;
-}
-
-.markdown-highlight mark.flagged {
-  background: #ffb300;
 }
 
 .markdown-highlight mark.speaking {
@@ -434,12 +437,52 @@ mark {
   text-decoration: underline wavy #e04b4b;
   text-decoration-thickness: 2px;
   text-underline-offset: 2px;
+  pointer-events: auto;
+  cursor: pointer;
+}
+
+.spellcheck-menu {
+  position: fixed;
+  z-index: 100;
+  min-width: 140px;
+  max-width: 260px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.2);
+  overflow: hidden;
+}
+
+.spellcheck-menu button {
+  display: block;
+  width: 100%;
+  padding: 0.5rem 0.75rem;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  color: var(--fg);
+  font-size: 0.9rem;
+  text-align: left;
+  cursor: pointer;
+}
+
+.spellcheck-menu button:hover,
+.spellcheck-menu button:focus {
+  background: var(--surface);
+  opacity: 1;
+}
+
+.spellcheck-menu .spellcheck-menu-empty {
+  padding: 0.5rem 0.75rem;
+  font-size: 0.85rem;
+  opacity: 0.7;
 }
 
 #review-markdown {
   resize: none;
   background: transparent;
   color: var(--fg);
+  z-index: 1;
 }
 
 #review-panel .row {

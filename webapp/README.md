@@ -9,11 +9,15 @@ searchable markdown, and compiling a book from whatever matches a topic.
   `../pdf_to_docx_pipeline` with a choice of engine (free local OCR, or a per-page
   vision-LLM call for messy scans/non-Latin scripts).
 - **Page-by-page review** (optional, PDF only) — approve or edit each page's converted
-  text before it's saved. Optional **Second-model validation** cross-checks any page below
-  100% confidence against a second model/engine (plus an on-demand manual check, always
-  available regardless of the toggle), with Thai spelling and toggleable server-side
-  read-aloud (Azure Speech) on top — see [`../CONTEXT.md`](../CONTEXT.md)'s "Multi-signal
-  'likely wrong' flagging".
+  text before it's saved. Thai spelling mistakes get a red wavy underline you can click for
+  suggested corrections, word-processor style (no more scanning a summary list at the bottom
+  to find the word). Optional **Second-model validation** cross-checks any page below 100%
+  confidence against a second model/engine (plus an on-demand manual check, always available
+  regardless of the toggle) and sets a "Needs review" badge — it doesn't paint the flagged
+  text itself anymore, since that stopped being useful once a page had more than a couple of
+  disagreements. Toggleable server-side read-aloud (Azure Speech) on top — see
+  [`../CONTEXT.md`](../CONTEXT.md)'s "Multi-signal 'likely wrong' flagging" and "Thai
+  spell-check".
 - **Data Search** — full-text search (SQLite FTS5) plus a book browser with per-book
   `.md` export.
 - **Data Generation** — synthesises a new markdown book from stored content matching a

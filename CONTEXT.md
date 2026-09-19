@@ -84,11 +84,17 @@ hint. Served by a plain `GET /audio/{filename}` route (same reasoning as `/image
 — not a `StaticFiles` mount, so tests can monkeypatch the audio directory).
 
 **Frontend** (`webapp/frontend/app.js` + `index.html` + `style.css`) — no framework, no
-build step. Central technique is a **highlight-overlay**: an `aria-hidden` div sits behind
-the editable review `<textarea>`, sharing identical font/padding/box-sizing, rendering the
-same text with `<mark class="...">` around flagged spans (transparent text, colour via
-background/underline only) while the textarea's real text shows through on top — editing a
-flagged span makes its highlight disappear once the edit no longer matches.
+build step. Central technique is a **highlight-overlay**: an `aria-hidden` div shares the
+editable review `<textarea>`'s exact font/padding/box-sizing and renders the same text with
+`<mark class="...">` around specific spans (transparent text, colour via background/
+underline only) while the textarea's real text shows through on top — editing a marked span
+makes its highlight disappear once the edit no longer matches. Two groups use it today:
+the currently-spoken paragraph during Read Aloud, and Thai spelling flags (clickable - see
+"Thai spell-check" below). The overlay sits *above* the textarea in z-index specifically so
+a clicked `mark.typo` can catch that click, while staying `pointer-events: none` everywhere
+else so ordinary typing/clicking still reaches the textarea underneath. A third group -
+confidence/multi-signal "likely wrong" flags - used to render here too; removed (see "Key
+features" below) because highlighting large or near-whole-page spans wasn't a useful signal.
 
 ## Key features
 
@@ -126,8 +132,13 @@ flagged span makes its highlight disappear once the edit no longer matches.
 
   All four are unioned and exact-duplicates removed (`review._dedup_flags`) before reaching
   the frontend; a disagreement from #2-4 alone (even with a high self-reported confidence
-  score) is itself enough to set `needs_review`. Highlighted via the same overlay technique
-  as before; fixing a flagged span makes its highlight disappear.
+  score) is itself enough to set `needs_review`. `flagged_snippets` itself is still returned
+  by the API and still drives that badge plus the per-page console log, but the frontend
+  **no longer highlights these spans in the editor text** - an earlier version painted every
+  flagged span yellow in the overlay, which on a page with heavy multi-signal disagreement
+  routinely meant most or all of the visible text, at which point "look here first"
+  highlighting stopped meaning anything. The confidence % and "Needs review" badge above the
+  editor are the signal now; the reviewer reads the actual page to find the problem.
 
   **Bounded, concurrent cross-checks** (`review._run_cross_checks_with_timeout`) — #2 and #4
   are each an extra API call stacked on top of the page's own primary conversion, on exactly
@@ -173,14 +184,30 @@ flagged span makes its highlight disappear once the edit no longer matches.
   (`difflib.SequenceMatcher` on whitespace-preserving tokens) and an agreement percentage.
   Doesn't touch approve/skip state; safe to re-run. This exists specifically because a
   vision-LLM's own confidence score is not calibrated (see Known limitations).
-- **Thai spell-check** — `webapp/backend/spellcheck.py` flags Thai words missing from
-  `pythainlp`'s dictionary with a red wavy underline + a suggested-correction hint. Uses the
+- **Thai spell-check, inline and interactive (word-processor style)** —
+  `webapp/backend/spellcheck.py` flags Thai words missing from `pythainlp`'s dictionary with
+  a red wavy underline in the editor overlay. Clicking a flagged word (`mark.typo`) pops up a
+  small dropdown (`#spellcheck-menu` in `app.js`) listing up to 5 of `pythainlp`'s suggested
+  corrections; picking one replaces every occurrence of that exact word in the textarea and
+  the underline disappears. This replaced an earlier design that listed all of a page's typos
+  in a static text line below the editor - the same "read a summary, then hunt for the word
+  in the text" friction the confidence-highlighting redesign above also removed. Uses the
   `"longest"` tokenizer engine specifically because the default `newmm` engine silently
   shatters a genuinely misspelled word into smaller *valid* syllables before a dictionary
   check ever sees it (e.g. `สวัสดร` → `ส` + `วัส` + `ดร`, each individually a real word) —
   `"longest"` only backs off to smaller pieces when nothing bigger matches, so a misspelling
   survives as one token. Advisory only — a real word the dictionary doesn't know (proper
   noun, slang, loanword) gets flagged too.
+
+  **Overlay stacking for click-to-correct** — the highlight overlay div normally sits
+  *behind* the textarea with `pointer-events: none` so every click reaches the editable text
+  underneath (see the overlay-technique note above). A clickable `mark.typo` needs the
+  opposite: it has to actually catch the click. Fixed by giving the overlay a **higher**
+  z-index than the textarea but keeping `pointer-events: none` on the overlay itself and
+  `pointer-events: auto` only on `mark.typo` - CSS lets a `none` parent's descendant opt back
+  into being a hit target, so every pixel that isn't exactly on a flagged word still falls
+  through to the textarea for normal editing, and only a click that lands on the red
+  underline is intercepted.
 - **Book browsing/export** — groups uploaded pages into "books," dedupes re-uploaded pages,
   `.md` export rewrites relative image links to absolute URLs (a downloaded file has no
   "current page" to resolve a relative link against).
@@ -246,7 +273,11 @@ browsing/export → confidence highlighting → image embedding (base64, then co
 `.jpg` files) → read-aloud with sync highlighting → verify-with-second-model → Thai
 spell-check + font-size bump → **beta launch Phase 1** (`webapp/Dockerfile`) → **beta launch
 Phase 2** (server-side TTS via Azure Speech) → **beta launch Phase 3** (multi-signal
-flagging, see below).
+flagging) → tunnel-timeout fix (bounded concurrent cross-checks) → opt-in toggles for
+second-model validation and Read aloud → **review UI redesign**: dropped confidence/
+multi-signal highlighting (a real usability complaint - it painted too much of the page to
+mean anything), replaced the static Thai-typo summary line with click-to-correct inline
+suggestions.
 
 **Known limitations:**
 
