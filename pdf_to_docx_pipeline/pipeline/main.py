@@ -4,7 +4,7 @@ End-to-end pipeline: PDF -> .docx.
 Usage:
     python -m pipeline.main input.pdf output.docx [--langs eng+tha+chi_sim]
 
-Design summary (see README.md for the full reasoning):
+Design summary (see ../CONTEXT.md for the full reasoning):
   1. Try to read each page's real text layer first (extract.py). Zero OCR,
      zero meaningful power draw, perfect accuracy - this is the path most
      modern PDFs (anything exported from Word, Google Docs, Canva, a phone

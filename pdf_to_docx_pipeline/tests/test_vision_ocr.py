@@ -1,7 +1,7 @@
 """Structural tests for vision_ocr.py / main_vision.py using a mocked
 Anthropic client - there is no ANTHROPIC_API_KEY in this environment, so
 these verify JSON parsing, bbox conversion, and docx assembly wiring
-without making a real network call, per the honesty note in README.md."""
+without making a real network call, per the known-limitations note in ../CONTEXT.md."""
 import json
 from types import SimpleNamespace
 

@@ -1,0 +1,7 @@
+# OS/editor junk that can show up in either subproject - each subproject's
+# own .gitignore covers its language-specific build/venv/data artifacts.
+.DS_Store
+Thumbs.db
+*.swp
+.vscode/
+.idea/

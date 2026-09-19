@@ -1,6 +1,6 @@
 """End-to-end test of main_vision.py with the vision-LLM call mocked out -
-no ANTHROPIC_API_KEY is available in this environment (see README.md's
-honesty note), so this exercises everything else: born-digital extraction,
+no ANTHROPIC_API_KEY is available in this environment (see ../CONTEXT.md's
+known-limitations note), so this exercises everything else: born-digital extraction,
 bbox-to-pixel-crop math, and docx assembly for the vision engine."""
 from docx import Document
 
