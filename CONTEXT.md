@@ -100,8 +100,33 @@ flagged span makes its highlight disappear once the edit no longer matches.
   editable markdown right) before saving; nothing hits the database until **Approve & Save**,
   and each approved page is saved immediately (not batched), so cancelling partway through
   a long book keeps everything approved so far.
-- **Confidence highlighting** — any text that dragged a page's confidence below 100% is
-  highlighted via the overlay technique; fixing it makes the highlight disappear.
+- **Multi-signal "likely wrong" flagging** (review flow only, not bulk upload — see below) —
+  `flagged_snippets` is now a *union* of up to four independent signals for any page below
+  100% confidence, not just the original per-line confidence flag, since no single signal is
+  fully trustworthy alone (see Known limitations):
+  1. **Per-line confidence** (original) — any text whose own OCR/vision confidence is <100%.
+  2. **Automatic cross-provider check** (`review._cross_provider_disagreement_flags`) — a
+     second vision-LLM call against whichever provider *wasn't* used for the primary
+     conversion, diffed the same way "Verify with second model" always has been; runs
+     automatically now, for *any* engine, not just on request. Always resolves its key from
+     the backend's environment (`ANTHROPIC_API_KEY`/`OPENAI_API_KEY`) — there's no
+     browser-supplied-key path for a provider the session isn't already using — so it's
+     silently skipped without one, never blocking a page.
+  3. **Tesseract cross-check** (`review._tesseract_cross_check_flags`, vision-engine pages
+     only) — runs classical OCR on the same rendered page image already used for the
+     vision-LLM pass and flags disagreements. Free and local, no API key needed, so it always
+     runs (unlike #2) whenever the engine is vision.
+  4. **GPT-4o logprob check** (`review._openai_logprob_flags`, only when the page's own
+     provider is `openai`) — re-sends the page requesting per-token log-probabilities
+     (`extract_page_with_vision_logprobs` in `vision_ocr.py`) and flags any transcribed block
+     whose average logprob falls below a fixed threshold (`_LOGPROB_FLAG_THRESHOLD = -1.5`).
+     Anthropic's API doesn't expose per-token logprobs, so there's no equivalent for that
+     provider.
+
+  All four are unioned and exact-duplicates removed (`review._dedup_flags`) before reaching
+  the frontend; a disagreement from #2-4 alone (even with a high self-reported confidence
+  score) is itself enough to set `needs_review`. Highlighted via the same overlay technique
+  as before; fixing a flagged span makes its highlight disappear.
 - **Real `.jpg` image storage** — images/handwriting/uncertain regions are saved as actual
   files (not base64) in reading order, deduped by content hash. (This replaced an earlier
   base64-embedded approach after explicit feedback that files-on-disk were preferable.)
@@ -176,29 +201,49 @@ correct from passing tests alone.
 
 ## Current state
 
-**181 tests pass** (42 in `pdf_to_docx_pipeline`, 139 in `webapp`), covering: the SQLite/FTS5
+**191 tests pass** (44 in `pdf_to_docx_pipeline`, 147 in `webapp`), covering: the SQLite/FTS5
 layer and duplicate-page dedup, per-page/per-character-budget chunking and image handling,
 category suggestion with graceful no-key fallback, the book compiler's retrieval and error
 handling for both providers, the review session state machine (including recovery from a
 failed page conversion and the second-opinion word-diff), Thai spell-checking, server-side
 TTS (voice selection, caching, the token-fetch + synthesize call chain, the `/api/tts` and
 `/audio/{filename}` endpoints — all against a mocked Azure client, no billed calls in CI),
-and the FastAPI endpoints via `TestClient`.
+the multi-signal flagging union (each of the four signals firing/not-firing independently,
+gated correctly by engine/provider, and deduped when they overlap), and the FastAPI endpoints
+via `TestClient`.
 
 **Shipped, in build order:** upload/search/chat webapp → per-page chunking with OCR
 confidence → async uploads → page-by-page review mode → live progress console → book
 browsing/export → confidence highlighting → image embedding (base64, then corrected to real
 `.jpg` files) → read-aloud with sync highlighting → verify-with-second-model → Thai
 spell-check + font-size bump → **beta launch Phase 1** (`webapp/Dockerfile`) → **beta launch
-Phase 2** (server-side TTS via Azure Speech, see below).
+Phase 2** (server-side TTS via Azure Speech) → **beta launch Phase 3** (multi-signal
+flagging, see below).
 
 **Known limitations:**
 
-- Vision-LLM confidence is the model's own self-reported estimate — explicitly *not*
-  calibrated, unlike Tesseract's real per-character score (well-calibrated as a *relative*
-  ranking, not independently verified accuracy either). This is exactly why "Verify with
-  second model" exists — though two models can still share the same blind spot (e.g.
-  genuinely illegible handwriting) and confidently agree on the same wrong answer.
+- **Vision-LLM confidence is the model's own self-reported estimate — explicitly *not*
+  calibrated**, unlike Tesseract's real per-character score (well-calibrated as a *relative*
+  ranking, not independently verified accuracy either). This is why flagging no longer relies
+  on it alone: any page below 100% confidence also goes through up to three independent
+  cross-checks (cross-provider, Tesseract, GPT-4o logprobs - see "Multi-signal 'likely
+  wrong' flagging" above), and a disagreement from any of them sets `needs_review` even when
+  the page's own confidence score was high. Residual limitations of *that* approach:
+  - All the cross-checks can still share the same blind spot (e.g. genuinely illegible
+    handwriting) and confidently agree on the same wrong answer - agreement between
+    signals is much stronger evidence than one score alone, but still isn't proof.
+  - The automatic cross-provider check and the GPT-4o logprob check each cost a real,
+    extra API call per flagged page (on top of the page's own original conversion call) -
+    unlike the free, local Tesseract cross-check. This was an explicit, accepted tradeoff
+    when promoting the check from opt-in to automatic (see the beta launch task list) -
+    watch usage/cost if a deployment processes many low-confidence pages.
+  - Multi-signal flagging only runs in the interactive page-by-page review flow
+    (`review.py`), not the background bulk-upload path (`POST /api/upload` /
+    `convert.convert_to_markdown`) - deliberately: bulk upload has no human pacing it
+    page-by-page, and enabling an automatic extra-API-call-per-page multiplier unattended
+    across a whole book felt like a cost surprise worth a separate, explicit decision
+    rather than folding in silently. Bulk-uploaded pages still get the original per-line
+    confidence flag, just not the three cross-checks.
 - Thai spell-check is a dictionary lookup, not language understanding — proper nouns, slang,
   and loanwords absent from the dictionary get flagged like typos too. Advisory only, never
   blocks approval.
@@ -285,11 +330,15 @@ multi-signal "likely wrong" flagging.
   `/audio/{filename}`, caching by text hash, frontend swapped off
   `SpeechSynthesisUtterance`, tests mocking the Azure call. Real-key listen test still
   outstanding (see Known limitations above).
-- **Phase 3** (multi-signal flagging) — not yet started.
+- **Phase 3** (multi-signal flagging) — tasks #11-15 done: automatic cross-provider check,
+  Tesseract cross-check, GPT-4o logprob check, unioned + deduped into `flagged_snippets`,
+  Known limitations rewritten above. Scoped to the review flow only (not bulk upload) - see
+  the residual-limitations bullet above for why.
 
 **Not yet done / natural next steps:** a real-Azure-key listen test for Phase 2 (build is
-done, quality unverified); Phase 1 tasks #2-5 (needs a host decision); then Phase 3 of the
-beta launch task list.
+done, quality unverified); Phase 1 tasks #2-5 (needs a host decision). All three beta launch
+phases are otherwise complete - see the repo's `AjanDB_beta_launch_tasks.md` (if kept) for
+the original acceptance criteria.
 
 ## Repository and links
 

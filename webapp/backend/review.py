@@ -91,9 +91,148 @@ def _cleanup(session_id: str, session: dict):
         _sessions.pop(session_id, None)
 
 
+def _dedup_flags(snippets: list[str]) -> list[str]:
+    """Removes exact duplicate strings, preserving first-seen order - once
+    confidence flags, cross-provider disagreement, Tesseract disagreement,
+    and logprob flags are all unioned into one list (see _convert_one_page),
+    the same span can easily get flagged by more than one source. The
+    frontend's highlight renderer already handles genuinely overlapping (not
+    identical) spans on its own, by preferring the longest match at a given
+    position - this just keeps the list itself free of redundant repeats."""
+    seen = set()
+    result = []
+    for s in snippets:
+        if s and s not in seen:
+            seen.add(s)
+            result.append(s)
+    return result
+
+
+def _diff_flags(a: str, b: str) -> list[str]:
+    """Runs _word_diff(a, b) and returns just the disagreeing spans from
+    `a`'s side, stripped - the shared core of every cross-check below."""
+    diff = _word_diff(a, b)
+    return [seg["a"].strip() for seg in diff["segments"]
+            if seg["tag"] != "equal" and seg.get("a", "").strip()]
+
+
+def _cross_provider_disagreement_flags(session: dict, page_index: int, chunk: dict) -> list[str]:
+    """Automatic version of verify_second_opinion (see that function's own
+    docstring for why a second, independently-run model is a stronger
+    signal than either engine's own confidence score) - runs for any page
+    whose own confidence is below 100%, regardless of which engine produced
+    it, instead of only when a reviewer opts in. Always resolves its API
+    key from the backend's own environment, never a browser-supplied one:
+    there's no mechanism for a reviewer to hand this session a *second*
+    provider's key mid-review (the session already has one key, for its own
+    engine/provider). Silently skipped - never blocks or fails page
+    conversion - if that environment key isn't configured; a human can
+    still run "Verify with second model" manually with a browser-supplied
+    key from the review UI. This is the one check here that costs a real
+    API call automatically - see CONTEXT.md's Known limitations."""
+    cross_provider = "openai" if (session["provider"] or "anthropic") == "anthropic" else "anthropic"
+    env_var = "OPENAI_API_KEY" if cross_provider == "openai" else "ANTHROPIC_API_KEY"
+    api_key = os.environ.get(env_var)
+    if not api_key:
+        return []
+
+    tmp_pdf = convert.extract_single_page_pdf(session["pdf_path"], page_index)
+    try:
+        second_chunks = convert.pdf_to_markdown_vision(tmp_pdf, provider=cross_provider, api_key=api_key)
+    except Exception as e:
+        _log(session, f"Automatic cross-check against {cross_provider} skipped: {e}")
+        return []
+    finally:
+        os.unlink(tmp_pdf)
+
+    flags = _diff_flags(chunk["markdown"], second_chunks[0]["markdown"])
+    if flags:
+        _log(session, f"Automatic cross-check against {cross_provider} flagged "
+                       f"{len(flags)} disagreement span(s)")
+    return flags
+
+
+def _tesseract_cross_check_flags(png_bytes: bytes, vision_markdown: str, langs: str) -> list[str]:
+    """Free, local second opinion for vision-engine pages: runs classical
+    Tesseract OCR (the same engine the classical engine itself uses) on the
+    identical rendered page image already used for the vision-LLM pass, and
+    flags spans where the two disagree. Unlike
+    _cross_provider_disagreement_flags above, this costs nothing and needs
+    no API key, so it always runs for a vision-engine page below 100%
+    confidence."""
+    from pipeline import ocr as pdf_ocr
+
+    result = pdf_ocr.process_scanned_page(png_bytes, langs=langs or pdf_ocr.DEFAULT_LANGS)
+    tesseract_text = "\n".join(line["text"] for line in result["lines"]).strip()
+    if not tesseract_text:
+        return []
+    return _diff_flags(vision_markdown, tesseract_text)
+
+
+# Below this average per-token log-probability (natural log, so -1.5 ~= a
+# 22% token probability), a GPT-4o transcribed span is flagged as worth a
+# second look. Chosen as a reasonable "clearly hesitant" cutoff, not derived
+# from calibration data - like the other checks here, a hint, not a verdict.
+_LOGPROB_FLAG_THRESHOLD = -1.5
+
+
+def _avg_logprob_for_span(raw_text: str, token_logprobs: list[tuple[str, float]],
+                           span_text: str) -> float | None:
+    """Finds `span_text` as a literal substring of `raw_text` (reconstructed
+    by concatenating token strings in completion order) and averages the
+    logprobs of every token whose character range overlaps that span.
+    Returns None if the span can't be located (e.g. the model reformatted
+    whitespace) - callers skip flagging rather than guessing."""
+    start = raw_text.find(span_text)
+    if start == -1 or not span_text:
+        return None
+    end = start + len(span_text)
+
+    offset = 0
+    logprobs_in_span = []
+    for token, logprob in token_logprobs:
+        tok_start, tok_end = offset, offset + len(token)
+        if tok_end > start and tok_start < end:
+            logprobs_in_span.append(logprob)
+        offset = tok_end
+    if not logprobs_in_span:
+        return None
+    return sum(logprobs_in_span) / len(logprobs_in_span)
+
+
+def _openai_logprob_flags(png_bytes: bytes, model: str, api_key: str) -> list[str]:
+    """GPT-4o only (see extract_page_with_vision_logprobs - the Anthropic
+    API doesn't expose per-token logprobs): re-sends the page with logprobs
+    requested, then flags any transcribed text block whose average
+    per-token log-probability falls below _LOGPROB_FLAG_THRESHOLD. This is
+    a second, independent request against the same provider/page (the
+    original conversion didn't ask for logprobs), so - like
+    _cross_provider_disagreement_flags - it costs an extra API call."""
+    from pipeline import vision_ocr
+
+    blocks, raw_text, token_logprobs = vision_ocr.extract_page_with_vision_logprobs(
+        png_bytes, model=model, api_key=api_key)
+    if not token_logprobs:
+        return []
+
+    flags = []
+    for block in blocks:
+        if block.get("type") != "text" or not block.get("text"):
+            continue
+        avg_logprob = _avg_logprob_for_span(raw_text, token_logprobs, block["text"])
+        if avg_logprob is not None and avg_logprob < _LOGPROB_FLAG_THRESHOLD:
+            flags.append(convert._clean(block["text"]).strip())
+    return flags
+
+
 def _convert_one_page(session: dict, page_index: int) -> dict:
     """Extracts, converts, and renders a preview image for exactly one page
-    of the session's source PDF."""
+    of the session's source PDF. Any page whose own confidence is below
+    100% additionally runs through the cross-check functions above - their
+    disagreement spans are unioned into flagged_snippets alongside (not
+    instead of) the original per-line confidence flags, since no single
+    signal here is fully trustworthy on its own (see CONTEXT.md's Known
+    limitations for the cost/coverage tradeoffs of each)."""
     tmp_pdf = convert.extract_single_page_pdf(session["pdf_path"], page_index)
     try:
         png_bytes = convert.render_page_preview(tmp_pdf, 0)
@@ -107,15 +246,29 @@ def _convert_one_page(session: dict, page_index: int) -> dict:
         os.unlink(tmp_pdf)
 
     chunk = chunks[0]  # exactly one page in -> exactly one chunk out
+
+    extra_flags = []
+    if chunk["confidence"] is not None and chunk["confidence"] < 100:
+        extra_flags += _cross_provider_disagreement_flags(session, page_index, chunk)
+        if session["engine"] == "vision":
+            extra_flags += _tesseract_cross_check_flags(png_bytes, chunk["markdown"], session["langs"])
+            if (session["provider"] or "anthropic") == "openai":
+                extra_flags += _openai_logprob_flags(png_bytes, session["model"], session["api_key"])
+
+    flagged_snippets = _dedup_flags(chunk.get("flagged_snippets", []) + extra_flags)
+
     return {
         "page_number": page_index + 1,
         "markdown": chunk["markdown"],
         "confidence": chunk["confidence"],
-        "needs_review": chunk["needs_review"],
-        # exact substrings of `markdown` that dragged confidence below 100 -
-        # the frontend highlights them so a human reviewing the page knows
-        # exactly what to check first instead of re-reading the whole thing.
-        "flagged_snippets": chunk.get("flagged_snippets", []),
+        # a disagreement from any cross-check above is itself grounds for
+        # review, even on a page whose own confidence score was high.
+        "needs_review": chunk["needs_review"] or bool(extra_flags),
+        # exact substrings of `markdown` that dragged confidence below 100,
+        # or that a cross-check above disagreed on - the frontend highlights
+        # them so a human reviewing the page knows exactly what to check
+        # first instead of re-reading the whole thing.
+        "flagged_snippets": flagged_snippets,
         # Thai words not in pythainlp's dictionary, each with suggested
         # correction(s) - a separate, advisory-only highlight from the
         # confidence flags above (see spellcheck.py).

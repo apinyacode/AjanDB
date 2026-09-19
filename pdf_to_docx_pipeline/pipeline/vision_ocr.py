@@ -188,8 +188,13 @@ def extract_page_with_vision(png_bytes: bytes, model: str = None, api_key: str =
 
     raw = _CALLERS[provider](png_bytes, model, resolved_key)
     parsed = _parse_model_json(raw)
+    return _blocks_with_pixel_bboxes(parsed, png_bytes)
 
-    # need real pixel dimensions to convert the model's normalized bboxes
+
+def _blocks_with_pixel_bboxes(parsed: dict, png_bytes: bytes) -> list[dict]:
+    """Converts each block's normalized (0-1) bbox to real pixel coordinates
+    - shared by extract_page_with_vision above and
+    extract_page_with_vision_logprobs below."""
     from PIL import Image
     import io
     img = Image.open(io.BytesIO(png_bytes))
@@ -203,3 +208,57 @@ def extract_page_with_vision(png_bytes: bytes, model: str = None, api_key: str =
             "bbox_px": (int(x0 * w), int(y0 * h), int(x1 * w), int(y1 * h)),
         })
     return blocks
+
+
+def extract_page_with_vision_logprobs(png_bytes: bytes, model: str = None,
+                                       api_key: str = None) -> tuple[list[dict], str, list[tuple[str, float]]]:
+    """OpenAI (GPT-4o) only: same page-to-blocks extraction as
+    extract_page_with_vision, but additionally requests per-token log-
+    probabilities on the completion, for callers that want to flag spans
+    the model was statistically unsure about - a signal orthogonal to (and
+    less gameable than) its own self-reported confidence number, since a
+    raw next-token probability isn't something the model can simply
+    overstate the way a free-text self-assessment can. The Anthropic
+    Messages API doesn't currently expose per-token logprobs, so there is
+    no equivalent for that provider - callers check which provider handled
+    a page before calling this (see review.py's _openai_logprob_flags).
+
+    Returns (blocks, raw_completion_text, token_logprobs) where
+    token_logprobs is [(token_string, logprob), ...] in completion order -
+    concatenating every token_string reconstructs raw_completion_text
+    exactly, which is what lets a caller map a token span back to a
+    character range in it."""
+    model = model or DEFAULT_MODEL_BY_PROVIDER["openai"]
+    resolved_key = api_key or os.environ.get(_API_KEY_ENV_VAR["openai"])
+    if not resolved_key:
+        raise RuntimeError(
+            f"{_API_KEY_ENV_VAR['openai']} is not set. The vision-LLM OCR engine needs your own "
+            f"{_PROVIDER_DISPLAY_NAME['openai']} API key - this is not the same as a claude.ai "
+            f"or ChatGPT Plus subscription."
+        )
+
+    client = OpenAI(api_key=resolved_key)
+    response = client.chat.completions.create(
+        model=model,
+        max_tokens=4096,
+        logprobs=True,
+        messages=[{
+            "role": "user",
+            "content": [
+                {"type": "text", "text": PROMPT},
+                {"type": "image_url", "image_url": {
+                    "url": f"data:image/png;base64,{_encode_image(png_bytes)}",
+                }},
+            ],
+        }],
+    )
+    raw = response.choices[0].message.content
+    choice_logprobs = response.choices[0].logprobs
+    token_logprobs = (
+        [(item.token, item.logprob) for item in choice_logprobs.content]
+        if choice_logprobs and choice_logprobs.content else []
+    )
+
+    parsed = _parse_model_json(raw)
+    blocks = _blocks_with_pixel_bboxes(parsed, png_bytes)
+    return blocks, raw, token_logprobs

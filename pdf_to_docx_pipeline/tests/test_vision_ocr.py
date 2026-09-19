@@ -200,6 +200,61 @@ def test_extract_page_with_vision_raises_clear_error_on_unparseable_response(mon
         assert "This is not JSON" in str(e)
 
 
+class _FakeLogprobItem:
+    def __init__(self, token, logprob):
+        self.token = token
+        self.logprob = logprob
+
+
+class _FakeOpenAIChoiceWithLogprobs:
+    def __init__(self, content, logprob_pairs):
+        self.message = _FakeOpenAIMessage(content)
+        self.logprobs = SimpleNamespace(
+            content=[_FakeLogprobItem(t, lp) for t, lp in logprob_pairs])
+
+
+class _FakeOpenAIWithLogprobs:
+    def __init__(self, content, logprob_pairs, api_key=None):
+        def create(**kwargs):
+            assert kwargs.get("logprobs") is True
+            return SimpleNamespace(choices=[_FakeOpenAIChoiceWithLogprobs(content, logprob_pairs)])
+        self.chat = SimpleNamespace(completions=SimpleNamespace(create=create))
+
+
+def _tokenize_reconstructably(text):
+    """Splits `text` into pieces whose concatenation reconstructs it exactly
+    - not real BPE, but exercises the same char-offset-mapping logic a real
+    tokenization would (see vision_ocr._blocks_with_pixel_bboxes callers'
+    downstream use of these offsets in review.py)."""
+    import re
+    return re.findall(r"\S+|\s+", text)
+
+
+def test_extract_page_with_vision_logprobs_returns_blocks_text_and_tokens(monkeypatch):
+    raw = _sample_response_json()
+    logprob_pairs = [(t, -0.1) for t in _tokenize_reconstructably(raw)]
+    monkeypatch.setattr(
+        vision_ocr, "OpenAI",
+        lambda api_key=None: _FakeOpenAIWithLogprobs(raw, logprob_pairs))
+
+    blocks, raw_text, token_logprobs = vision_ocr.extract_page_with_vision_logprobs(
+        _tiny_png_bytes(w=200, h=100), api_key="fake")
+
+    assert raw_text == raw
+    assert len(blocks) == 3
+    assert token_logprobs == logprob_pairs
+    assert "".join(t for t, _ in token_logprobs) == raw_text  # offsets are reconstructable
+
+
+def test_extract_page_with_vision_logprobs_raises_clear_error_when_no_api_key(monkeypatch):
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    try:
+        vision_ocr.extract_page_with_vision_logprobs(_tiny_png_bytes())
+        assert False, "expected RuntimeError"
+    except RuntimeError as e:
+        assert "OPENAI_API_KEY" in str(e)
+
+
 def test_repair_invalid_escapes_leaves_valid_escapes_untouched():
     text = r'{"a": "line1\nline2", "b": "quote\"here", "c": "bad\stray"}'
     repaired = vision_ocr._repair_invalid_escapes(text)

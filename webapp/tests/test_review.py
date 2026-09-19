@@ -325,3 +325,199 @@ def test_verify_second_opinion_propagates_missing_api_key_error(tmp_path, monkey
     # session must still be usable afterwards - verification failing shouldn't break review
     session = review._get_session(session_id)
     assert session["pending"] is not None
+
+
+# --- Phase 3: automatic multi-signal "likely wrong" flagging ---
+
+def test_dedup_flags_removes_exact_duplicates_preserving_order():
+    assert review._dedup_flags(["a", "b", "a", "c", "b", ""]) == ["a", "b", "c"]
+
+
+def test_auto_cross_check_flags_disagreement_even_with_high_self_reported_confidence(tmp_path, monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "fake-openai-key")
+
+    def fake_pdf_to_markdown_vision(pdf_path, provider=None, model=None, api_key=None):
+        if provider == "openai":
+            return [{"page_number": 1, "markdown": "The cat sat on the mat",
+                      "confidence": 96.0, "needs_review": False, "flagged_snippets": []}]
+        return [{"page_number": 1, "markdown": "The dog sat on the mat",
+                  "confidence": 97.0, "needs_review": False, "flagged_snippets": []}]
+
+    monkeypatch.setattr(review.convert, "pdf_to_markdown_vision", fake_pdf_to_markdown_vision)
+
+    started = review.start(_session_pdf(tmp_path), "book.pdf", engine="vision",
+                            provider="anthropic", api_key="fake-anthropic-key")
+    page = started["page"]
+
+    assert page["confidence"] == 97.0  # each provider's own self-reported confidence was high
+    assert any("dog" in s for s in page["flagged_snippets"])
+    assert page["needs_review"] is True
+
+
+def test_auto_cross_check_is_silently_skipped_without_an_environment_key(tmp_path, monkeypatch):
+    from pipeline import ocr as pdf_ocr
+
+    # avoid the (unrelated) free Tesseract cross-check also firing here, so
+    # this test isolates the "no env key" skip path specifically
+    monkeypatch.setattr(
+        pdf_ocr, "process_scanned_page",
+        lambda png_bytes, langs=None: {
+            "lines": [{"text": "Some transcribed text", "confidence": 90, "bbox": (0, 0, 1, 1)}],
+            "pictures": [], "processed": None,
+        })
+
+    def fake_pdf_to_markdown_vision(pdf_path, provider=None, model=None, api_key=None):
+        return [{"page_number": 1, "markdown": "Some transcribed text",
+                  "confidence": 90.0, "needs_review": False, "flagged_snippets": []}]
+
+    monkeypatch.setattr(review.convert, "pdf_to_markdown_vision", fake_pdf_to_markdown_vision)
+
+    started = review.start(_session_pdf(tmp_path), "book.pdf", engine="vision",
+                            provider="anthropic", api_key="fake-anthropic-key")
+    page = started["page"]
+
+    assert page["flagged_snippets"] == []  # no env key configured -> cross-check never ran
+    assert page["needs_review"] is False
+
+
+def test_tesseract_cross_check_flags_disagreement_for_vision_engine_pages(tmp_path, monkeypatch):
+    from pipeline import ocr as pdf_ocr
+
+    monkeypatch.setattr(
+        pdf_ocr, "process_scanned_page",
+        lambda png_bytes, langs=None: {
+            "lines": [{"text": "completely different tesseract output", "confidence": 80, "bbox": (0, 0, 1, 1)}],
+            "pictures": [], "processed": None,
+        })
+
+    def fake_pdf_to_markdown_vision(pdf_path, provider=None, model=None, api_key=None):
+        return [{"page_number": 1, "markdown": "vision model transcription here",
+                  "confidence": 92.0, "needs_review": False, "flagged_snippets": []}]
+
+    monkeypatch.setattr(review.convert, "pdf_to_markdown_vision", fake_pdf_to_markdown_vision)
+
+    started = review.start(_session_pdf(tmp_path), "book.pdf", engine="vision",
+                            provider="anthropic", api_key="fake-anthropic-key")
+    page = started["page"]
+
+    assert page["flagged_snippets"]  # Tesseract's disagreeing text got flagged, free/no API key needed
+    assert page["needs_review"] is True
+
+
+def test_tesseract_cross_check_does_not_run_for_classical_engine_pages(tmp_path, monkeypatch):
+    # page 2 of the fixture genuinely needs classical OCR - pdf_to_markdown
+    # itself calls pipeline.ocr.process_scanned_page as part of its normal,
+    # already-existing job, so asserting on *that* call wouldn't isolate
+    # anything; assert directly that review.py's own cross-check wrapper is
+    # never invoked for a classical-engine session instead.
+    calls = []
+    monkeypatch.setattr(review, "_tesseract_cross_check_flags", lambda *a, **k: calls.append(1) or [])
+
+    started = review.start(_session_pdf(tmp_path), "book.pdf", langs="eng+tha")
+    review.approve(started["session_id"])
+
+    assert calls == []
+
+
+def test_openai_logprob_check_flags_low_confidence_span(tmp_path, monkeypatch):
+    from pipeline import ocr as pdf_ocr
+    from pipeline import vision_ocr
+
+    # keep the (unrelated) free Tesseract cross-check from also firing here,
+    # so this test isolates the logprob signal specifically
+    monkeypatch.setattr(
+        pdf_ocr, "process_scanned_page",
+        lambda png_bytes, langs=None: {
+            "lines": [{"text": "some garbled region of text", "confidence": 90, "bbox": (0, 0, 1, 1)}],
+            "pictures": [], "processed": None,
+        })
+
+    def fake_extract_logprobs(png_bytes, model=None, api_key=None):
+        blocks = [{"type": "text", "text": "garbled region", "bbox": [0, 0, 1, 1], "confidence": 90}]
+        raw = '{"blocks": [{"type": "text", "text": "garbled region"}]}'
+        # char-level "tokens" so concatenation reconstructs `raw` exactly at
+        # the right offsets - low logprob only for the chars actually inside
+        # the "garbled region" span, normal logprob everywhere else.
+        span_start = raw.index("garbled region")
+        span_end = span_start + len("garbled region")
+        token_logprobs = [
+            (ch, -3.0 if span_start <= i < span_end else -0.01)
+            for i, ch in enumerate(raw)
+        ]
+        return blocks, raw, token_logprobs
+
+    monkeypatch.setattr(vision_ocr, "extract_page_with_vision_logprobs", fake_extract_logprobs)
+
+    def fake_pdf_to_markdown_vision(pdf_path, provider=None, model=None, api_key=None):
+        return [{"page_number": 1, "markdown": "some garbled region of text",
+                  "confidence": 88.0, "needs_review": False, "flagged_snippets": []}]
+
+    monkeypatch.setattr(review.convert, "pdf_to_markdown_vision", fake_pdf_to_markdown_vision)
+
+    started = review.start(_session_pdf(tmp_path), "book.pdf", engine="vision",
+                            provider="openai", api_key="fake-openai-key")
+    page = started["page"]
+
+    assert "garbled region" in page["flagged_snippets"]
+    assert page["needs_review"] is True
+
+
+def test_openai_logprob_check_does_not_run_for_anthropic_provider(tmp_path, monkeypatch):
+    from pipeline import ocr as pdf_ocr
+    from pipeline import vision_ocr
+
+    monkeypatch.setattr(
+        pdf_ocr, "process_scanned_page",
+        lambda png_bytes, langs=None: {
+            "lines": [{"text": "vision model transcription here", "confidence": 90, "bbox": (0, 0, 1, 1)}],
+            "pictures": [], "processed": None,
+        })
+    calls = []
+    monkeypatch.setattr(
+        vision_ocr, "extract_page_with_vision_logprobs",
+        lambda *a, **k: calls.append(1) or (_ for _ in ()).throw(AssertionError("should not be called")))
+
+    def fake_pdf_to_markdown_vision(pdf_path, provider=None, model=None, api_key=None):
+        return [{"page_number": 1, "markdown": "vision model transcription here",
+                  "confidence": 92.0, "needs_review": False, "flagged_snippets": []}]
+
+    monkeypatch.setattr(review.convert, "pdf_to_markdown_vision", fake_pdf_to_markdown_vision)
+
+    started = review.start(_session_pdf(tmp_path), "book.pdf", engine="vision",
+                            provider="anthropic", api_key="fake-anthropic-key")
+
+    assert calls == []
+    assert started["page"]["flagged_snippets"] == []
+
+
+def test_multiple_flag_sources_on_the_same_span_are_unioned_without_duplicates(tmp_path, monkeypatch):
+    from pipeline import ocr as pdf_ocr
+
+    monkeypatch.setenv("OPENAI_API_KEY", "fake-openai-key")
+    monkeypatch.setattr(
+        pdf_ocr, "process_scanned_page",
+        lambda png_bytes, langs=None: {
+            "lines": [{"text": "shaky text over here", "confidence": 80, "bbox": (0, 0, 1, 1)}],
+            "pictures": [], "processed": None,
+        })
+
+    def fake_pdf_to_markdown_vision(pdf_path, provider=None, model=None, api_key=None):
+        if provider == "openai":
+            return [{"page_number": 1, "markdown": "shaky text over here",
+                      "confidence": 95.0, "needs_review": False, "flagged_snippets": []}]
+        return [{"page_number": 1, "markdown": "unclear text over here",
+                  "confidence": 90.0, "needs_review": False, "flagged_snippets": ["unclear"]}]
+
+    monkeypatch.setattr(review.convert, "pdf_to_markdown_vision", fake_pdf_to_markdown_vision)
+
+    started = review.start(_session_pdf(tmp_path), "book.pdf", engine="vision",
+                            provider="anthropic", api_key="fake-anthropic-key")
+    page = started["page"]
+
+    # "unclear" was independently flagged by the original per-line confidence
+    # check, the cross-provider diff, AND the Tesseract diff - the union
+    # must still list it exactly once, and the highlight renderer (app.js)
+    # only ever needs one entry per distinct span to render it correctly.
+    assert page["flagged_snippets"].count("unclear") == 1
+    assert len(page["flagged_snippets"]) == len(set(page["flagged_snippets"]))
+    assert page["needs_review"] is True
