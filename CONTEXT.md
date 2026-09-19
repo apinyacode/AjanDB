@@ -173,7 +173,7 @@ FastAPI endpoints via `TestClient`.
 confidence → async uploads → page-by-page review mode → live progress console → book
 browsing/export → confidence highlighting → image embedding (base64, then corrected to real
 `.jpg` files) → read-aloud with sync highlighting → verify-with-second-model → Thai
-spell-check + font-size bump.
+spell-check + font-size bump → **beta launch, Phase 1** (`webapp/Dockerfile`, see below).
 
 **Known limitations:**
 
@@ -228,8 +228,35 @@ spell-check + font-size bump.
   accuracy-verified; run it on a few pages first and check the output before trusting it on
   a full document.
 
-**Not yet done / natural next steps:** none currently pending — the most recent request
-(Thai spell-check + font-size bump) is complete, tested, and pushed.
+- `docker build`/`docker run` for `webapp/Dockerfile` could not be run live in the sandbox
+  this was built in — its container runtime's registry pulls are blocked by that
+  environment's own egress policy (Docker Hub CDN denied), unrelated to the Dockerfile
+  itself. Verified instead by reproducing the image's exact dependency set (a clean venv
+  from both subprojects' `requirements.txt`, no dev-only packages) and file layout (only
+  `pipeline/`, `webapp/backend/`, `webapp/frontend/` — matching the Dockerfile's `COPY`
+  lines) on the host directly, then running the full upload → review (approve/skip) →
+  search → book-browse round trip against it with Playwright. Re-run `docker build -f
+  webapp/Dockerfile -t ajandb .` (from the repo root) somewhere with normal registry access
+  before relying on it for a real deploy.
+- Fixed in passing: `pdf_to_docx_pipeline/requirements.txt` was missing `pillow` (`from PIL
+  import Image` in `handwriting.py`/`make_test_pdf.py` only worked because it happened to
+  already be installed in the dev venvs, e.g. as a manual install or another package's
+  transitive pull) — a fresh install from `requirements.txt` alone would have failed at
+  import time. Added explicitly.
+
+**Beta launch task list — status** (see `AjanDB_beta_launch_tasks.md` if still around, or
+ask for it again): three phases — (1) hosting readiness, (2) server-side TTS, (3)
+multi-signal "likely wrong" flagging.
+
+- **Phase 1** — task #1 (`webapp/Dockerfile`) done, above. Tasks #2-5 (persistent volume,
+  stable URL/TLS, scheduled backup, live smoke test against a deployed host) are on hold
+  pending a host choice (Render/Railway/VPS) — each depends on host-specific config this
+  doc can't usefully guess at ahead of that decision.
+- **Phase 2** (server-side TTS, Azure Speech) — not yet started.
+- **Phase 3** (multi-signal flagging) — not yet started.
+
+**Not yet done / natural next steps:** Phase 1 tasks #2-5 (needs a host decision), then
+Phases 2-3 of the beta launch task list above.
 
 ## Repository and links
 

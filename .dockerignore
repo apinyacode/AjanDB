@@ -1,0 +1,13 @@
+**/.venv/
+**/__pycache__/
+**/*.pyc
+**/.pytest_cache/
+**/.git/
+webapp/data/
+webapp/cloudflared
+webapp/tests/
+webapp/scripts/
+webapp/.env
+pdf_to_docx_pipeline/tests/
+pdf_to_docx_pipeline/sample_input.pdf
+*.md

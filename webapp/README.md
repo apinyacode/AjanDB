@@ -44,6 +44,19 @@ Alternatively, `bash deploy.sh` installs system dependencies, creates the venv, 
 the server for you — see `deploy.sh --help` and the script itself for the `vercel` target
 and its current limitations.
 
+**Docker** (deploy artifact for a future hosted target — build from the **repo root**,
+not from `webapp/`, since the image needs `../pdf_to_docx_pipeline` too):
+
+```bash
+docker build -f webapp/Dockerfile -t ajandb .
+docker run -p 8000:8000 -v ajandb-data:/app/webapp/data ajandb
+```
+
+The volume mount keeps `data/ajandb.sqlite3` and `data/images/` across container restarts
+— without it, the library is wiped on every redeploy. There's no persistent-volume or
+stable-URL config beyond this yet (that depends on which host is chosen — see
+[`../CONTEXT.md`](../CONTEXT.md)'s "Not yet done").
+
 ## Run locally
 
 ```bash

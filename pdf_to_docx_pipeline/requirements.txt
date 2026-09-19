@@ -1,5 +1,6 @@
 pymupdf
 opencv-python-headless
+pillow
 python-docx
 langdetect
 pytesseract
