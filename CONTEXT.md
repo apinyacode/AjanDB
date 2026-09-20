@@ -314,7 +314,14 @@ two would break the overlay's alignment with the real text.
   underline is intercepted.
 - **Book browsing/export** — groups uploaded pages into "books," dedupes re-uploaded pages,
   `.md` export rewrites relative image links to absolute URLs (a downloaded file has no
-  "current page" to resolve a relative link against).
+  "current page" to resolve a relative link against). Each page in a book's expanded "View
+  pages" list has its own **Edit** button (`PUT /api/documents/{id}` → `db.update_document()`)
+  - lets a "Needs review" page be corrected (and the flag cleared) or any other saved page
+  touched up, without going through the original page-by-page review flow again, which only
+  ever runs once at upload time. An in-place `UPDATE` on that one row (the `documents_au`
+  trigger keeps the FTS index in sync automatically) rather than inserting another
+  latest-row-wins duplicate the way a full re-upload does (see `_LATEST_PER_PAGE_CTE`) -
+  there's only one row for this exact page to correct, so there's nothing to dedupe.
 - **Managing stored books** (Data Search tab, each book card) —
   - **Delete** (`DELETE /api/books/{id}`) removes every stored page of a book after a
     confirm() prompt (destructive, no undo), plus its `book_flags`/`book_labels` rows and its
@@ -426,7 +433,7 @@ correct from passing tests alone.
 
 ## Current state
 
-**286 tests pass** (48 in `pdf_to_docx_pipeline`, 238 in `webapp`), covering: the SQLite/FTS5
+**293 tests pass** (48 in `pdf_to_docx_pipeline`, 245 in `webapp`), covering: the SQLite/FTS5
 layer and duplicate-page dedup, per-page/per-character-budget chunking and image handling,
 category suggestion with graceful no-key fallback, the book compiler's retrieval and error
 handling for both providers (plus its copy-paste/text/flow/video-script modes - which system
@@ -445,11 +452,13 @@ engine/provider, and deduped when they overlap), `sources.py`'s durable PDF+sett
 `originals.py`'s permanent per-book file storage (roundtrip, no-op re-save, extension
 preservation, per-book independence), the `book_labels` CRUD functions and their embedding
 into `list_books()`, delete/ready-for-publish/resume/labels/view-and-export-original/
-data-generation endpoints (including a resumed session picking up the original
-engine/provider/category, the source being cleaned up once a review finishes naturally but
-kept after a cancel, deleting a book cleaning up its flags/labels/sources/originals together,
-and every Data Generation mode routing to the right backend function with the right
-provider-specific key), and the FastAPI endpoints via `TestClient`.
+data-generation/update-document endpoints (including a resumed session picking up the
+original engine/provider/category, the source being cleaned up once a review finishes
+naturally but kept after a cancel, deleting a book cleaning up its
+flags/labels/sources/originals together, every Data Generation mode routing to the right
+backend function with the right provider-specific key, and editing a saved page keeping the
+FTS index in sync via the existing `documents_au` trigger), and the FastAPI endpoints via
+`TestClient`.
 
 **Shipped, in build order:** upload/search/chat webapp → per-page chunking with OCR
 confidence → async uploads → page-by-page review mode → live progress console → book
@@ -477,7 +486,12 @@ same pattern `/api/upload` already used, since image/video generation can take l
 to risk the same tunnel-timeout problem that pattern was built to avoid → **review panel
 fit-to-screen + zoom**: the scanned-image and editable-text areas now size to a shared,
 device-aware `--review-area-height` (via `dvh`/`clamp()`) instead of a flat `65vh` guess, and
-a shared zoom control (50%-250%) magnifies both sides together for closer comparison.
+a shared zoom control (50%-250%) magnifies both sides together for closer comparison → **fix
+a vision-LLM JSON-parsing crash** on a stray unescaped quote in transcribed text (the second
+failure of this shape - a stray backslash was already handled) → **per-page editing in Data
+Search**: each page in a book's expanded "View pages" list can now be corrected in place
+(`PUT /api/documents/{id}`), including clearing its "Needs review" flag, without redoing the
+original page-by-page review.
 
 **Known limitations:**
 
@@ -544,6 +558,12 @@ a shared zoom control (50%-250%) magnifies both sides together for closer compar
   `localStorage` - it survives flipping between pages within one review session (deliberately
   not reset per page, since a reviewer who zoomed in to check detail likely wants to keep
   that while working through a book), but resets to 100% on a full page reload.
+- Editing a page from Data Search updates that page's own card immediately, but a book
+  card's own `needs_review_count` badge (and the confidence average it's part of) is computed
+  once per `GET /api/books` call and isn't recomputed live after an in-place edit - it catches
+  up on the next **Refresh** or page reload, same "no live cross-card invalidation" tradeoff
+  the app already accepts elsewhere (e.g. the ready-for-publish toggle only updates its own
+  card).
 - Search/retrieval for the book compiler is keyword-based (SQLite FTS5), not semantic. Fine
   at personal-library scale; a vector index would be the natural upgrade if keyword search
   starts missing relevant files. The compiler also sends at most 20 matching chunks (8000

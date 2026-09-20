@@ -423,6 +423,28 @@ def get_document(doc_id: int):
     return doc
 
 
+class UpdateDocumentRequest(BaseModel):
+    markdown: str
+    needs_review: bool = False
+
+
+@app.put("/api/documents/{doc_id}")
+def update_document(doc_id: int, req: UpdateDocumentRequest):
+    """Lets a saved page's converted text (and its "needs review" flag) be
+    corrected from the Data Search tab's per-page view, after the book is
+    already saved - not just during the original page-by-page review flow,
+    since that's the only other place a page's text could be changed
+    before this."""
+    conn = db.get_connection()
+    try:
+        updated = db.update_document(conn, doc_id, req.markdown, req.needs_review)
+    finally:
+        conn.close()
+    if not updated:
+        raise HTTPException(404, "Document not found")
+    return {"id": doc_id, "markdown": req.markdown, "needs_review": req.needs_review}
+
+
 @app.get("/api/books")
 def list_books():
     """One entry per uploaded source file (whether it needed OCR or was

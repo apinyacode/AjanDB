@@ -28,7 +28,10 @@ searchable markdown, and compiling a book from whatever matches a topic.
   picks up right where it left off — see [`../CONTEXT.md`](../CONTEXT.md)'s "Managing stored
   books". Every book's original upload is now kept permanently for export, and a
   still-in-progress review also keeps a temporary copy so it can resume — unlike bulk
-  uploads' converted markdown, which is all this app used to retain.
+  uploads' converted markdown, which is all this app used to retain. Each page in a book's
+  expanded "View pages" list has its own **Edit** button, so a page flagged "Needs review" -
+  or any other saved page - can be corrected (and the flag cleared) without redoing the
+  original page-by-page review.
 - **Data Generation** — describe a topic and pick a mode: **Copy-paste** lists the exact
   matching content verbatim with a reference for each piece (no model call, nothing
   reworded), or **Generative** builds new material around it, keeping the original wording

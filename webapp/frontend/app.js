@@ -266,10 +266,83 @@ function renderChunks(container, chunks) {
       `<div class="chunk-meta">` +
       `<span>Page ${chunk.page_number}</span>` +
       `<span>Confidence: ${confidenceText}</span>` +
-      (chunk.needs_review ? `<span class="badge">Needs review</span>` : "") +
+      `<span class="badge chunk-needs-review-badge${chunk.needs_review ? "" : " hidden"}">Needs review</span>` +
+      `<button class="ghost edit-chunk-btn" type="button">Edit</button>` +
       `</div>` +
-      `<pre class="markdown-preview">${body}</pre>`;
+      `<pre class="markdown-preview chunk-markdown-view">${body}</pre>` +
+      `<div class="chunk-edit-form hidden">` +
+      `<textarea class="chunk-edit-textarea" rows="14" spellcheck="false"></textarea>` +
+      `<div class="row chunk-edit-row">` +
+      `<label class="checkbox-label">` +
+      `<input type="checkbox" class="chunk-needs-review-checkbox"> Needs review` +
+      `</label>` +
+      `<button class="chunk-save-btn" type="button">Save</button>` +
+      `<button class="ghost chunk-cancel-btn" type="button">Cancel</button>` +
+      `<span class="status chunk-edit-status"></span>` +
+      `</div>` +
+      `</div>`;
     container.appendChild(card);
+    wireChunkEditControls(card, chunk);
+  });
+}
+
+// Lets an already-saved page's converted text (and its "Needs review"
+// flag) be corrected from Data Search's per-book "View pages" list, not
+// just during the original page-by-page review - a typo noticed later, or
+// a flagged page that's now been checked, otherwise has no way to be
+// fixed once the book is saved. `chunk` is mutated in place on a
+// successful save so re-opening Edit afterward starts from the latest text.
+function wireChunkEditControls(card, chunk) {
+  const editBtn = card.querySelector(".edit-chunk-btn");
+  const viewEl = card.querySelector(".chunk-markdown-view");
+  const formEl = card.querySelector(".chunk-edit-form");
+  const textarea = card.querySelector(".chunk-edit-textarea");
+  const needsReviewCheckbox = card.querySelector(".chunk-needs-review-checkbox");
+  const needsReviewBadge = card.querySelector(".chunk-needs-review-badge");
+  const saveBtn = card.querySelector(".chunk-save-btn");
+  const cancelBtn = card.querySelector(".chunk-cancel-btn");
+  const statusEl = card.querySelector(".chunk-edit-status");
+
+  function closeEditor() {
+    formEl.classList.add("hidden");
+    viewEl.classList.remove("hidden");
+    editBtn.classList.remove("hidden");
+    statusEl.textContent = "";
+  }
+
+  editBtn.addEventListener("click", () => {
+    textarea.value = chunk.markdown;
+    needsReviewCheckbox.checked = !!chunk.needs_review;
+    saveBtn.disabled = false;
+    viewEl.classList.add("hidden");
+    editBtn.classList.add("hidden");
+    formEl.classList.remove("hidden");
+    textarea.focus();
+  });
+
+  cancelBtn.addEventListener("click", closeEditor);
+
+  saveBtn.addEventListener("click", async () => {
+    saveBtn.disabled = true;
+    statusEl.textContent = "Saving…";
+    try {
+      const res = await fetch(`/api/documents/${chunk.id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ markdown: textarea.value, needs_review: needsReviewCheckbox.checked }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Failed to save");
+      chunk.markdown = data.markdown;
+      chunk.needs_review = data.needs_review;
+      viewEl.innerHTML = renderMarkdownWithImages(chunk.markdown, []);
+      card.classList.toggle("needs-review", chunk.needs_review);
+      needsReviewBadge.classList.toggle("hidden", !chunk.needs_review);
+      closeEditor();
+    } catch (err) {
+      statusEl.textContent = `Error: ${err.message}`;
+      saveBtn.disabled = false;
+    }
   });
 }
 

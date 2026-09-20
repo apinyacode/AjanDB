@@ -207,6 +207,49 @@ def test_get_document_returns_stored_markdown(tmp_path, monkeypatch):
     assert body["source_filename"] == "note.md"
 
 
+# --- Editing a saved page from Data Search (PUT /api/documents/{doc_id}) ---
+
+def test_update_document_changes_markdown_and_clears_needs_review(tmp_path, monkeypatch):
+    client = _client(tmp_path, monkeypatch)
+    upload_resp = _upload_and_wait(
+        client,
+        files={"file": ("note.md", b"# Hello", "text/markdown")},
+    )
+    doc_id = upload_resp.json()["chunks"][0]["id"]
+
+    resp = client.put(f"/api/documents/{doc_id}",
+                       json={"markdown": "# Corrected", "needs_review": False})
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == {"id": doc_id, "markdown": "# Corrected", "needs_review": False}
+
+    saved = client.get(f"/api/documents/{doc_id}").json()
+    assert saved["markdown"] == "# Corrected"
+    assert saved["needs_review"] == 0
+
+
+def test_update_document_shows_up_in_the_books_view(tmp_path, monkeypatch):
+    client = _client(tmp_path, monkeypatch)
+    _upload_and_wait(
+        client,
+        files={"file": ("book.pdf", _sample_pdf_bytes(), "application/pdf")},
+        data={"langs": "eng+tha"},
+    )
+    book_id = client.get("/api/books").json()[0]["id"]
+    chunk_id = client.get(f"/api/books/{book_id}").json()["chunks"][0]["id"]
+
+    client.put(f"/api/documents/{chunk_id}",
+               json={"markdown": "hand-corrected text", "needs_review": False})
+
+    chunks = client.get(f"/api/books/{book_id}").json()["chunks"]
+    assert chunks[0]["markdown"] == "hand-corrected text"
+
+
+def test_update_document_returns_404_for_unknown_id(tmp_path, monkeypatch):
+    client = _client(tmp_path, monkeypatch)
+    resp = client.put("/api/documents/999", json={"markdown": "text", "needs_review": False})
+    assert resp.status_code == 404
+
+
 def test_upload_with_explicit_category_skips_suggestion(tmp_path, monkeypatch):
     client = _client(tmp_path, monkeypatch)
     resp = _upload_and_wait(

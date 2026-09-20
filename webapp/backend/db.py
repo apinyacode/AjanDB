@@ -125,6 +125,24 @@ def get_document(conn: sqlite3.Connection, doc_id: int) -> dict | None:
     return dict(row) if row else None
 
 
+def update_document(conn: sqlite3.Connection, doc_id: int, markdown: str, needs_review: bool) -> bool:
+    """Overwrites one saved page's markdown and needs_review flag in place -
+    for correcting a page from the Data Search tab after it's already been
+    saved (a typo noticed later, or a "needs review" page that's now been
+    checked), as opposed to insert_chunks()'s original-conversion path or a
+    full re-upload's latest-row-wins dedup (see _LATEST_PER_PAGE_CTE) -
+    there's only ever one row for this exact page to correct, so an
+    in-place UPDATE is simpler than inserting another superseding row.
+    The documents_au trigger keeps the FTS index in sync automatically.
+    Returns False if doc_id doesn't exist."""
+    cur = conn.execute(
+        "UPDATE documents SET markdown = ?, needs_review = ? WHERE id = ?",
+        (markdown, int(bool(needs_review)), doc_id),
+    )
+    conn.commit()
+    return cur.rowcount > 0
+
+
 def list_documents(conn: sqlite3.Connection) -> list[dict]:
     rows = conn.execute(
         """

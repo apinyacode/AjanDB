@@ -53,6 +53,45 @@ def test_get_document_returns_none_for_missing_id(tmp_path):
     assert db.get_document(conn, 999) is None
 
 
+def test_update_document_overwrites_markdown_and_needs_review(tmp_path):
+    conn = _tmp_conn(tmp_path)
+    ids = db.insert_chunks(conn, "scan.pdf", "pdf", "Notes",
+                            _one_chunk("garbled text", confidence=42.5, needs_review=True))
+
+    updated = db.update_document(conn, ids[0], "corrected text", False)
+
+    assert updated is True
+    doc = db.get_document(conn, ids[0])
+    assert doc["markdown"] == "corrected text"
+    assert doc["needs_review"] == 0
+    assert doc["confidence"] == 42.5  # untouched - editing text isn't a re-conversion
+
+
+def test_update_document_can_set_needs_review_true(tmp_path):
+    conn = _tmp_conn(tmp_path)
+    ids = db.insert_chunks(conn, "notes.md", "md", "Notes", _one_chunk("fine text"))
+
+    db.update_document(conn, ids[0], "actually questionable text", True)
+
+    assert db.get_document(conn, ids[0])["needs_review"] == 1
+
+
+def test_update_document_returns_false_for_unknown_id(tmp_path):
+    conn = _tmp_conn(tmp_path)
+    assert db.update_document(conn, 99999, "text", False) is False
+
+
+def test_update_document_keeps_the_search_index_in_sync(tmp_path):
+    conn = _tmp_conn(tmp_path)
+    ids = db.insert_chunks(conn, "notes.md", "md", "Notes", _one_chunk("original wording"))
+    assert len(db.search(conn, "original")) == 1
+
+    db.update_document(conn, ids[0], "revised wording", False)
+
+    assert db.search(conn, "original") == []  # stale index entry doesn't linger
+    assert len(db.search(conn, "revised")) == 1
+
+
 def test_search_finds_matching_document(tmp_path):
     conn = _tmp_conn(tmp_path)
     db.insert_chunks(conn, "parenting.md", "md", "Parenting",
