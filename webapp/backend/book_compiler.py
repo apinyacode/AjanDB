@@ -1,14 +1,17 @@
 """
-Chatbot-style "compile a book" feature: takes a free-text instruction,
-retrieves matching documents from the store via keyword search, and asks
-Claude to synthesise them into a coherent book.
+"Data Generation" text modes: takes a free-text instruction, retrieves
+matching documents from the store via keyword search, and either lists
+them verbatim (`compile_copy_paste` - no model call at all) or asks an LLM
+to build new material *around* them (`compile_book` - see its `mode`
+argument for the three flavors of that). content_studio.py's image/video
+modes are built on top of this module's retrieval and `compile_book`
+(for a video's narration script), rather than duplicating either.
 
 Retrieval is a simple keyword search (see _extract_keywords / db.search),
 not semantic search - good enough for "find files that mention this topic"
 at small personal-library scale, and it keeps the store to plain SQLite
-with no embeddings/vector index to run. The actual synthesis work (turning
-scattered notes into an organised book) is left entirely to the model call,
-which is what it's actually good at.
+with no embeddings/vector index to run. The actual generative work is left
+entirely to the model call, which is what it's actually good at.
 
 Two providers, same prompt/output contract - pick whichever API key you
 actually have:
@@ -53,23 +56,69 @@ _API_KEY_ENV_VAR = {
 
 _PROVIDER_DISPLAY_NAME = {"anthropic": "Anthropic", "openai": "OpenAI"}
 
-SYSTEM_PROMPT = """You are compiling a book from a personal knowledge base of \
-uploaded documents. You will be given the user's instruction for what the \
-book should be about, followed by the full text of every source document \
-that matched their topic.
+# Every "generative" text mode shares the same rule that makes it
+# "generative" rather than "rewritten": never alter the source material's
+# own wording, only add new material around it. Each mode below just
+# targets a different shape of output around that same constraint.
 
-Write a coherent, well-organised book in Markdown:
-- Give it a title (# heading) and organise the content into logical chapters \
-(## headings).
-- Synthesise and reorganise the source material around the topic - don't just \
-concatenate the documents verbatim.
-- Preserve the substance and any direct guidance worth keeping, but cut \
-tangents that don't serve the stated topic.
-- If sources disagree, or a claim seems specific to just one source, say so \
-briefly rather than presenting it as universal.
-- If none of the provided source material is actually relevant to the \
-instruction, say so plainly instead of inventing content.
+_TEXT_SYSTEM_PROMPT = """You are creating new material from a personal knowledge base of \
+uploaded documents, for the "Generative" mode of a content-creation tool. You will be \
+given the user's instruction for what to create, followed by the full text of every \
+source document that matched their topic.
+
+Write new material in Markdown that is built *around* the source material rather than a \
+rewrite of it:
+- Never reword, paraphrase, or alter the original wording of the source text. Where you \
+draw on a source directly, quote it exactly (e.g. in a blockquote), and cite which source \
+it came from right next to the quote.
+- Add new connective, explanatory, and contextual prose of your own around those quotes - \
+framing, transitions, synthesis, analysis - so the result reads as one coherent new piece, \
+not a patchwork of quotes.
+- If none of the provided source material is actually relevant to the instruction, say so \
+plainly instead of inventing content.
 """
+
+_FLOW_SYSTEM_PROMPT = """You are creating new material from a personal knowledge base of \
+uploaded documents, for the "Generative - link across books" mode of a content-creation \
+tool. You will be given the user's instruction for what to create, followed by the full \
+text of every source document that matched their topic - drawn from what may be several \
+different books.
+
+Identify passages that address the same topic across *different* source books, and weave \
+them into one continuous narrative flow that moves between books:
+- Never reword, paraphrase, or alter the original wording of the source text. Quote each \
+passage exactly (e.g. in a blockquote), and cite which specific book it came from right \
+next to the quote.
+- Write your own connective narration between quotes to carry the reader from one book's \
+treatment of the topic to the next, pointing out where they agree, disagree, or build on \
+each other.
+- If none of the provided source material is actually relevant to the instruction, say so \
+plainly instead of inventing content.
+"""
+
+_VIDEO_SCRIPT_SYSTEM_PROMPT = """You are writing a short narration script for a vertical \
+short-form video (TikTok-length, about 45-75 seconds spoken aloud - roughly 120-180 \
+words), from a personal knowledge base of uploaded documents. You will be given the \
+user's instruction for what the video should be about, followed by the full text of \
+every source document that matched their topic.
+
+Write the script as plain narration text only - no markdown headers, no stage directions, \
+nothing but words meant to be spoken aloud:
+- Never reword, paraphrase, or alter the original wording of the source text. Where you \
+draw on a source directly, speak it verbatim, introduced naturally (e.g. "As one book puts \
+it, ...").
+- Add your own short connective narration around those quotes so the whole thing flows as \
+one short, coherent spoken piece.
+- Keep it tight - this is a short clip, not a full essay.
+- If none of the provided source material is actually relevant to the instruction, say so \
+plainly instead of inventing content.
+"""
+
+_SYSTEM_PROMPTS = {
+    "text": _TEXT_SYSTEM_PROMPT,
+    "flow": _FLOW_SYSTEM_PROMPT,
+    "video_script": _VIDEO_SCRIPT_SYSTEM_PROMPT,
+}
 
 _STOPWORDS = {
     "a", "an", "the", "of", "for", "and", "or", "to", "on", "in", "about",
@@ -89,24 +138,62 @@ def _extract_keywords(instruction: str) -> str:
     return " ".join(keywords) if keywords else instruction
 
 
-def _call_anthropic(user_message: str, model: str, api_key: str) -> str:
+def retrieve_matches(instruction: str, conn, max_sources: int = 20) -> list[dict]:
+    """Keyword-searches the library for `instruction`'s topic and returns
+    the full matched documents (not just the search index's own row shape),
+    each annotated with a human-readable `label` ("filename (page X/Y)") -
+    shared by every Data Generation mode: this module's own copy-paste and
+    generative text/flow/video-script modes, plus content_studio.py's
+    image/video modes."""
+    query = _extract_keywords(instruction)
+    matches = db_module.search(conn, query, limit=max_sources)
+    docs = []
+    for m in matches:
+        full = dict(db_module.get_document(conn, m["id"]))
+        full["label"] = f"{full['source_filename']} (page {full['page_number']}/{full['total_pages']})"
+        docs.append(full)
+    return docs
+
+
+def compile_copy_paste(instruction: str, conn, max_sources: int = 20) -> dict:
+    """Returns {"markdown": str, "sources": [label, ...]} - pure retrieval,
+    no model call: lists the exact stored content of every matching page
+    verbatim, each clearly cited by source file/page. For when the goal is
+    "show me what the books actually say," not a generated piece built
+    around them (see compile_book for that)."""
+    docs = retrieve_matches(instruction, conn, max_sources)
+    if not docs:
+        return {
+            "markdown": (
+                "# No matching source material found\n\n"
+                "No uploaded documents matched this topic. Try uploading "
+                "relevant files first, or rephrase the instruction."
+            ),
+            "sources": [],
+        }
+    blocks = [f"## {doc['label']}\n\n{doc['markdown']}" for doc in docs]
+    markdown = f"# Source material matching: {instruction}\n\n" + "\n\n---\n\n".join(blocks)
+    return {"markdown": markdown, "sources": [doc["label"] for doc in docs]}
+
+
+def _call_anthropic(user_message: str, model: str, api_key: str, system_prompt: str) -> str:
     client = Anthropic(api_key=api_key)
     response = client.messages.create(
         model=model,
         max_tokens=8192,
-        system=SYSTEM_PROMPT,
+        system=system_prompt,
         messages=[{"role": "user", "content": user_message}],
     )
     return "".join(b.text for b in response.content if b.type == "text")
 
 
-def _call_openai(user_message: str, model: str, api_key: str) -> str:
+def _call_openai(user_message: str, model: str, api_key: str, system_prompt: str) -> str:
     client = OpenAI(api_key=api_key)
     response = client.chat.completions.create(
         model=model,
         max_tokens=8192,
         messages=[
-            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_message},
         ],
     )
@@ -117,20 +204,27 @@ _CALLERS = {"anthropic": _call_anthropic, "openai": _call_openai}
 
 
 def compile_book(instruction: str, conn, provider: str = None, model: str = None,
-                  api_key: str = None, max_sources: int = 20,
+                  api_key: str = None, mode: str = "text", max_sources: int = 20,
                   max_chars_per_source: int = 8000) -> dict:
     """Returns {"markdown": str, "sources": [filename, ...]}. `provider` picks
     which API this calls ("anthropic" or "openai", default "anthropic" or
-    $LLM_PROVIDER); `model` defaults to that provider's flagship model."""
+    $LLM_PROVIDER); `model` defaults to that provider's flagship model.
+
+    `mode` picks which of _SYSTEM_PROMPTS drives the generation: "text"
+    (default, plain generative synthesis), "flow" (explicitly links the
+    same topic across different source books into one narrative), or
+    "video_script" (a short TikTok-length narration script for
+    content_studio.py's video mode)."""
+    if mode not in _SYSTEM_PROMPTS:
+        raise ValueError(f"Unknown compile_book mode {mode!r} - expected one of {sorted(_SYSTEM_PROMPTS)}")
     provider = (provider or os.environ.get("LLM_PROVIDER") or DEFAULT_PROVIDER).lower()
     if provider not in _CALLERS:
         raise ValueError(f"Unknown LLM provider {provider!r} - expected 'anthropic' or 'openai'")
     model = model or DEFAULT_MODEL_BY_PROVIDER[provider]
 
-    query = _extract_keywords(instruction)
-    matches = db_module.search(conn, query, limit=max_sources)
+    docs = retrieve_matches(instruction, conn, max_sources)
 
-    if not matches:
+    if not docs:
         return {
             "markdown": (
                 "# No matching source material found\n\n"
@@ -152,18 +246,16 @@ def compile_book(instruction: str, conn, provider: str = None, model: str = None
 
     source_blocks = []
     source_labels = []
-    for m in matches:
-        full = db_module.get_document(conn, m["id"])
-        content = _strip_embedded_images(full["markdown"])[:max_chars_per_source]
-        label = f"{full['source_filename']} (page {full['page_number']}/{full['total_pages']})"
-        source_labels.append(label)
-        source_blocks.append(f"--- SOURCE: {label} ---\n{content}")
+    for doc in docs:
+        content = _strip_embedded_images(doc["markdown"])[:max_chars_per_source]
+        source_labels.append(doc["label"])
+        source_blocks.append(f"--- SOURCE: {doc['label']} ---\n{content}")
 
     user_message = (
         f"Instruction: {instruction}\n\n"
-        f"Source documents ({len(matches)} matched):\n\n" + "\n\n".join(source_blocks)
+        f"Source documents ({len(docs)} matched):\n\n" + "\n\n".join(source_blocks)
     )
 
-    markdown = _CALLERS[provider](user_message, model, resolved_key)
+    markdown = _CALLERS[provider](user_message, model, resolved_key, _SYSTEM_PROMPTS[mode])
 
     return {"markdown": markdown, "sources": source_labels}

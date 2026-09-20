@@ -181,8 +181,8 @@ document.getElementById("upload-btn").addEventListener("click", async () => {
   }
 });
 
-function renderConsole(lines) {
-  const el = document.getElementById("upload-console");
+function renderConsole(lines, elId = "upload-console") {
+  const el = document.getElementById(elId);
   if (!lines || !lines.length) {
     el.classList.add("hidden");
     el.textContent = "";
@@ -953,31 +953,108 @@ function wireLabelControls(card, book, statusEl) {
 document.getElementById("refresh-books-btn").addEventListener("click", loadBooks);
 loadBooks();
 
+const outputModeCopyPasteRadio = document.getElementById("output-mode-copy-paste");
+const outputModeGenerativeRadio = document.getElementById("output-mode-generative");
+const generativeModeRow = document.getElementById("generative-mode-row");
+const generativeModeHint = document.getElementById("generative-mode-hint");
+const generativeModeRadios = document.querySelectorAll('input[name="generative-mode"]');
+
+const GENERATIVE_MODE_HINTS = {
+  text: "Generates new material around the matching content - quoting it exactly, adding new connective narration around it.",
+  flow: "Same as Text, but specifically links the same topic across different source books into one continuous flow.",
+  image: "Generates one illustrative image inspired by the matching content - always uses the OpenAI key regardless of the text model above (Anthropic has no image-generation API).",
+  video: "Writes a short narration script, generates one image, and assembles a narrated vertical (TikTok-style) video - needs an Azure Speech key/region in the API Keys panel on top of a text-model key.",
+};
+
+function syncOutputModeUI() {
+  const isGenerative = outputModeGenerativeRadio.checked;
+  generativeModeRow.classList.toggle("hidden", !isGenerative);
+  generativeModeHint.classList.toggle("hidden", !isGenerative);
+  if (isGenerative) {
+    const mode = document.querySelector('input[name="generative-mode"]:checked').value;
+    generativeModeHint.textContent = GENERATIVE_MODE_HINTS[mode];
+  }
+}
+
+outputModeCopyPasteRadio.addEventListener("change", syncOutputModeUI);
+outputModeGenerativeRadio.addEventListener("change", syncOutputModeUI);
+generativeModeRadios.forEach((r) => r.addEventListener("change", syncOutputModeUI));
+syncOutputModeUI();
+
 document.getElementById("chat-btn").addEventListener("click", async () => {
   const instruction = document.getElementById("chat-input").value.trim();
   const status = document.getElementById("chat-status");
   const output = document.getElementById("chat-output");
+  const imageResult = document.getElementById("chat-image-result");
+  const imageEl = document.getElementById("chat-image-el");
+  const imagePromptEl = document.getElementById("chat-image-prompt");
+  const videoResult = document.getElementById("chat-video-result");
+  const videoEl = document.getElementById("chat-video-el");
+  const videoScriptEl = document.getElementById("chat-video-script");
   if (!instruction) return;
 
-  status.textContent = "Compiling…";
-  output.textContent = "";
-
+  const outputMode = outputModeGenerativeRadio.checked ? "generative" : "copy_paste";
+  const generativeMode = outputMode === "generative"
+    ? document.querySelector('input[name="generative-mode"]:checked').value
+    : null;
   const provider = document.getElementById("chat-provider-select").value;
 
+  output.classList.add("hidden");
+  imageResult.classList.add("hidden");
+  videoResult.classList.add("hidden");
+  output.textContent = "";
+  renderConsole([], "chat-console");
+
+  const chatBtn = document.getElementById("chat-btn");
+  chatBtn.disabled = true;
+  status.textContent = outputMode === "copy_paste" ? "Retrieving…" : "Generating…";
+
   try {
-    const res = await fetch("/api/chat", {
+    const res = await fetch("/api/generate", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ instruction, provider, ...currentApiKeys() }),
+      body: JSON.stringify({
+        instruction, output_mode: outputMode, generative_mode: generativeMode, provider,
+        ...currentApiKeys(), ...currentAzureKeys(),
+      }),
     });
     const data = await res.json();
-    if (!res.ok) throw new Error(data.detail || "Compile failed");
-    status.textContent = data.sources.length
-      ? `Compiled from ${data.sources.length} source file(s): ${data.sources.join(", ")}`
-      : "No matching source files.";
-    output.textContent = data.markdown;
+    if (!res.ok) throw new Error(data.detail || "Generation failed");
+    const jobId = data.job_id;
+
+    while (true) {
+      await new Promise((r) => setTimeout(r, 1000));
+      const pollRes = await fetch(`/api/generate/${jobId}`);
+      const pollData = await pollRes.json();
+      if (!pollRes.ok) throw new Error(pollData.detail || "Generation failed");
+      renderConsole(pollData.log, "chat-console");
+      if (pollData.status === "processing") continue;
+
+      const sourceNote = pollData.sources && pollData.sources.length
+        ? `using ${pollData.sources.length} source(s): ${pollData.sources.join(", ")}`
+        : "with no matching sources";
+
+      if (pollData.kind === "text") {
+        status.textContent = `Generated ${sourceNote}.`;
+        output.textContent = pollData.markdown;
+        output.classList.remove("hidden");
+      } else if (pollData.kind === "image") {
+        status.textContent = `Generated ${sourceNote}.`;
+        imageEl.src = pollData.image_url;
+        imagePromptEl.textContent = `Prompt: ${pollData.prompt}`;
+        imageResult.classList.remove("hidden");
+      } else if (pollData.kind === "video") {
+        status.textContent = `Generated ${sourceNote}.`;
+        videoEl.src = pollData.video_url;
+        videoScriptEl.textContent = pollData.script;
+        videoResult.classList.remove("hidden");
+      }
+      break;
+    }
   } catch (err) {
     status.textContent = `Error: ${err.message}`;
+  } finally {
+    chatBtn.disabled = false;
   }
 });
 

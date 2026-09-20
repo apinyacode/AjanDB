@@ -383,6 +383,32 @@ mark {
   cursor: default;
 }
 
+.radio-label {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.9rem;
+  cursor: pointer;
+}
+
+#chat-image-result img {
+  max-width: 100%;
+  max-height: 60vh;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  display: block;
+  margin-top: 0.5rem;
+}
+
+#chat-video-result video {
+  max-width: 360px;
+  max-height: 70vh;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  display: block;
+  margin-top: 0.5rem;
+}
+
 .hidden { display: none; }
 
 .sr-only {

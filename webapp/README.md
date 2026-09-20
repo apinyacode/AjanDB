@@ -27,8 +27,12 @@ searchable markdown, and compiling a book from whatever matches a topic.
   books". Every book's original upload is now kept permanently for export, and a
   still-in-progress review also keeps a temporary copy so it can resume — unlike bulk
   uploads' converted markdown, which is all this app used to retain.
-- **Data Generation** — synthesises a new markdown book from stored content matching a
-  topic, via Claude or GPT.
+- **Data Generation** — describe a topic and pick a mode: **Copy-paste** lists the exact
+  matching content verbatim with a reference for each piece (no model call, nothing
+  reworded), or **Generative** builds new material around it, keeping the original wording
+  unchanged wherever it's quoted — as plain text, as one flow linking the same topic across
+  different books, as a generated illustrative image, or as a short narrated vertical
+  (TikTok-style) video — see [`../CONTEXT.md`](../CONTEXT.md)'s "Data Generation modes".
 - **`scripts/chunked_upload.py`** — ingests a large book outside the browser, with resume
   support for interrupted runs.
 
@@ -44,15 +48,22 @@ pip install -r requirements-dev.txt
 ```
 
 PDF uploads need the same system dependencies as `../pdf_to_docx_pipeline` (Tesseract +
-language packs, Noto fonts) — see that directory's README.
+language packs, Noto fonts) — see that directory's README. Data Generation's **video** mode
+additionally needs `ffmpeg` on the `PATH` (used to assemble the narrated video, not for OCR).
 
-The Vision-LLM engine and Data Generation need an API key, either typed into the page's
-"API Keys" panel (stored in that browser's `localStorage` only) or set in the environment:
+The Vision-LLM engine and Data Generation's text-based modes need an API key, either typed
+into the page's "API Keys" panel (stored in that browser's `localStorage` only) or set in
+the environment:
 
 ```bash
 export ANTHROPIC_API_KEY=sk-ant-...   # for the Claude option
 export OPENAI_API_KEY=sk-...          # for the GPT option
 ```
+
+Data Generation's **image** and **video** modes always need an OpenAI key specifically
+(Anthropic has no image-generation API) regardless of which provider the text modes are set
+to, and **video** additionally needs an Azure Speech key/region (see below) to narrate the
+script it writes.
 
 Having *either* set is what lets page-by-page review's **Second-model validation** checkbox
 (unchecked by default — see the review options above) actually do anything for any page
@@ -60,8 +71,9 @@ below 100% confidence, at the cost of an extra API call per such page when it's 
 this applies even to classical-engine (otherwise free) sessions, since the cross-check
 always uses whichever of these two keys is available in the backend's environment.
 
-Read Aloud (in page-by-page review, its own **Enable Read aloud** checkbox) needs an Azure
-Speech key/region the same way — typed into the "API Keys" panel, or:
+Read Aloud (in page-by-page review, its own **Enable Read aloud** checkbox) and Data
+Generation's **video** mode both need an Azure Speech key/region the same way — typed into
+the "API Keys" panel, or:
 
 ```bash
 export AZURE_SPEECH_KEY=...
@@ -80,10 +92,11 @@ docker build -f webapp/Dockerfile -t ajandb .
 docker run -p 8000:8000 -v ajandb-data:/app/webapp/data ajandb
 ```
 
-The volume mount keeps `data/ajandb.sqlite3` and `data/images/` across container restarts
-— without it, the library is wiped on every redeploy. There's no persistent-volume or
-stable-URL config beyond this yet (that depends on which host is chosen — see
-[`../CONTEXT.md`](../CONTEXT.md)'s "Not yet done").
+The volume mount keeps `data/ajandb.sqlite3`, `data/images/`, `data/originals/`, and Data
+Generation's `data/generated_images/`/`data/generated_videos/` across container restarts —
+without it, the library (and anything generated) is wiped on every redeploy. There's no
+persistent-volume or stable-URL config beyond this yet (that depends on which host is chosen
+— see [`../CONTEXT.md`](../CONTEXT.md)'s "Not yet done").
 
 ## Run locally
 

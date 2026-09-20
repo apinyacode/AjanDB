@@ -5,7 +5,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import pytest
 
-from backend import convert, originals, sources, tts
+from backend import content_studio, convert, originals, sources, tts
 
 
 @pytest.fixture(autouse=True)
@@ -39,6 +39,15 @@ def _isolate_originals_dir(tmp_path, monkeypatch):
     per-book copies of the original uploaded file under
     webapp/data/originals/."""
     monkeypatch.setattr(originals, "ORIGINALS_DIR", str(tmp_path / "originals"))
+
+
+@pytest.fixture(autouse=True)
+def _isolate_generated_media_dirs(tmp_path, monkeypatch):
+    """Same reasoning as _isolate_images_dir, for content_studio.py's
+    generated images/videos under webapp/data/generated_images/ and
+    webapp/data/generated_videos/."""
+    monkeypatch.setattr(content_studio, "IMAGES_DIR", str(tmp_path / "generated_images"))
+    monkeypatch.setattr(content_studio, "VIDEOS_DIR", str(tmp_path / "generated_videos"))
 
 
 @pytest.fixture(autouse=True)

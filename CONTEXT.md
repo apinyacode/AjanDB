@@ -13,7 +13,8 @@ repo has two parts:
   resource spent only where nothing else works.
 - **`webapp/`** — a FastAPI + vanilla JS/HTML/CSS app (no build step, SQLite+FTS5 storage)
   with three tabs: **Data Store** (upload/convert/review), **Data Search** (full-text search
-  + browse/export), **Data Generation** (LLM-synthesised books from stored content).
+  + browse/export), **Data Generation** (copy-paste retrieval, or LLM-generated text/image/
+  video built around stored content).
 
 ## Architecture
 
@@ -114,6 +115,34 @@ pattern exactly (same hash-by-content-then-check-if-file-exists shape). Voice is
 scanning the text for Thai-script characters rather than trusting a caller-supplied language
 hint. Served by a plain `GET /audio/{filename}` route (same reasoning as `/images/{filename}`
 — not a `StaticFiles` mount, so tests can monkeypatch the audio directory).
+
+**Data Generation** (`webapp/backend/book_compiler.py` + `content_studio.py`) — one shared
+retrieval step (`book_compiler.retrieve_matches()`, a keyword search via `db.search()` that
+returns full matched documents each annotated with a citable `label`), feeding whichever
+output mode was picked (see "Data Generation modes" below for what each one does):
+`compile_copy_paste()` (no model call), `compile_book()` (text/flow/video-script, one of
+three system prompts per its `mode` argument, same Anthropic/OpenAI caller split the rest of
+this app uses), or `content_studio.py`'s `generate_image()`/`generate_video()` (OpenAI image
+API +, for video, `tts.py` narration and a local `ffmpeg` assembly step - `content_studio.py`
+calls into `book_compiler.py` for retrieval and the video's script rather than duplicating
+either). Generated images/videos are saved under `webapp/data/generated_images/` and
+`webapp/data/generated_videos/` by a random id each time - unlike `tts.py`'s/`convert.py`'s
+content-hash caches, this isn't deduplicated, since regenerating the same instruction is
+expected to produce different output. Both are served by plain
+`GET /generated-images/{filename}`/`GET /generated-videos/{filename}` routes (same
+not-a-`StaticFiles`-mount reasoning as `/images/{filename}`).
+
+`POST /api/generate` runs the picked mode as a background job and returns a `job_id`
+immediately, polled via `GET /api/generate/{job_id}` - the exact same pattern `/api/upload`
+already established (see "Not yet done" in the previous version of this doc, which called
+exactly this out as the fix for a synchronous request's timeout risk). Both job kinds share
+one `_jobs`/`_job_logs` module-level state and a factored `_job_status_response()` helper in
+`main.py`, since a job is just a job_id key into the same shape regardless of what kind of
+work it's tracking. This replaced the old single synchronous `POST /api/chat` endpoint
+outright rather than keeping it alongside the new one - image/video generation (LLM call +
+image-API call + TTS call + `ffmpeg` assembly, for video) risk exactly the kind of
+long-request timeout the upload job pattern already exists to avoid, and there's no external
+consumer of the old route to keep compatible with.
 
 **Frontend** (`webapp/frontend/app.js` + `index.html` + `style.css`) — no framework, no
 build step. Central technique is a **highlight-overlay**: an `aria-hidden` div shares the
@@ -276,9 +305,42 @@ features" below) because highlighting large or near-whole-page spans wasn't a us
     list; it's purely a frontend suggestion; `db.list_books()` embeds each book's full labels
     dict via one extra query grouped in Python (avoiding both an N+1 per-book lookup and a
     dependency on SQLite's JSON1 functions for portability).
-- **Data Generation** — keyword-searches stored chunks and asks Claude/GPT to synthesise a
-  coherent book from the matches; strips embedded image markdown down to a `[label]`
-  placeholder before sending anything to an LLM.
+- **Data Generation modes** — describe a topic, then pick an `output_mode`:
+  - **Copy-paste** (`book_compiler.compile_copy_paste()`) — pure retrieval, no model call at
+    all: lists the exact stored content of every matching page verbatim, each cited by
+    source file/page. For "show me what the books actually say," not a generated piece.
+  - **Generative** — builds new material *around* the matched content rather than a rewrite
+    of it, via one of four mutually-exclusive `generative_mode`s (picking one replaces the
+    others, they don't stack - a video already contains its own script, so there's no
+    separate "text" output to add on top of it):
+    - **Text** (default) — `compile_book(mode="text")`. The system prompt's central rule,
+      shared by every generative sub-mode below: never reword or paraphrase the source
+      text - quote it exactly, cited, and add new connective/explanatory prose *around* those
+      quotes. This is a deliberate change from the feature's original behavior, which
+      explicitly told the model to reorganise and paraphrase source material into a
+      new "book" rather than preserve its wording.
+    - **Flow** (`compile_book(mode="flow")`) — same quote-verbatim rule, but the prompt
+      specifically asks the model to find the same topic addressed across *different* source
+      books and weave them into one continuous narrative that moves between books, calling
+      out where they agree, disagree, or build on each other.
+    - **Image** (`content_studio.generate_image()`) — generates one illustrative image via
+      OpenAI's image API (`dall-e-3`, `response_format="b64_json"` so the bytes are saved
+      locally rather than depending on a provider-hosted URL that can expire), using the
+      matched sources' labels as context for the image prompt. Always needs an OpenAI key
+      regardless of which provider the text modes are set to - Anthropic has no
+      image-generation API.
+    - **Video** (`content_studio.generate_video()`) — writes a short (~45-75s / 120-180
+      word) narration script via `compile_book(mode="video_script")`, generates one
+      illustrative image the same way as Image mode, synthesises the script as speech via
+      `tts.py` (Azure), and assembles the two into a vertical (1080×1920) mp4 with a local
+      `ffmpeg` subprocess call. This is **not** true AI video generation - no such provider
+      (Runway/Pika/Sora/...) is wired into this app, and adding one would mean a brand-new
+      paid API this codebase has never touched. It's a real, working narrated slideshow
+      video, just not a generated video clip - see Known limitations.
+  - Every mode strips embedded image markdown down to a `[label]` placeholder before sending
+    anything to a text model (meaningless as prose either way - see
+    `book_compiler._strip_embedded_images`), *except* Copy-paste, which is a literal
+    reproduction of the stored content and renders images normally.
 - **`scripts/chunked_upload.py`** — ingests a large book outside the browser/HTTP entirely:
   splits into page-range batches, converts and inserts each batch as it finishes (pages show
   up in search immediately), and supports `--resume` to pick up after an interruption instead
@@ -321,22 +383,30 @@ correct from passing tests alone.
 
 ## Current state
 
-**259 tests pass** (44 in `pdf_to_docx_pipeline`, 215 in `webapp`), covering: the SQLite/FTS5
+**282 tests pass** (44 in `pdf_to_docx_pipeline`, 238 in `webapp`), covering: the SQLite/FTS5
 layer and duplicate-page dedup, per-page/per-character-budget chunking and image handling,
 category suggestion with graceful no-key fallback, the book compiler's retrieval and error
-handling for both providers, the review session state machine (including recovery from a
-failed page conversion and the second-opinion word-diff), Thai spell-checking, server-side
-TTS (voice selection, caching, the token-fetch + synthesize call chain, the `/api/tts` and
-`/audio/{filename}` endpoints — all against a mocked Azure client, no billed calls in CI),
-the multi-signal flagging union (each of the four signals firing/not-firing independently,
-gated correctly by engine/provider, and deduped when they overlap), `sources.py`'s durable
-PDF+settings storage, `originals.py`'s permanent per-book file storage (roundtrip, no-op
-re-save, extension preservation, per-book independence), the `book_labels` CRUD functions and
-their embedding into `list_books()`, delete/ready-for-publish/resume/labels/view-and-export-
-original endpoints (including a resumed session picking up the original engine/provider/
-category, the source being cleaned up once a review finishes naturally but kept after a
-cancel, and deleting a book cleaning up its flags/labels/sources/originals together), and the
-FastAPI endpoints via `TestClient`.
+handling for both providers (plus its copy-paste/text/flow/video-script modes - which system
+prompt each one selects, that copy-paste never calls a model client at all, and that it
+preserves embedded image links copy-paste discards for the other modes), `content_studio.py`'s
+image generation (no-key error, prompt building, no dedup across repeated calls) and video
+assembly (real, non-mocked `ffmpeg`/`ffprobe` verifying an actual playable vertical mp4 comes
+out the other end - only the model/image-API/Azure calls feeding it are mocked, same
+mock-the-billed-call-run-the-real-local-tool split as Tesseract/PyMuPDF elsewhere in this
+repo), the review session state machine (including recovery from a failed page conversion
+and the second-opinion word-diff), Thai spell-checking, server-side TTS (voice selection,
+caching, the token-fetch + synthesize call chain, the `/api/tts` and `/audio/{filename}`
+endpoints — all against a mocked Azure client, no billed calls in CI), the multi-signal
+flagging union (each of the four signals firing/not-firing independently, gated correctly by
+engine/provider, and deduped when they overlap), `sources.py`'s durable PDF+settings storage,
+`originals.py`'s permanent per-book file storage (roundtrip, no-op re-save, extension
+preservation, per-book independence), the `book_labels` CRUD functions and their embedding
+into `list_books()`, delete/ready-for-publish/resume/labels/view-and-export-original/
+data-generation endpoints (including a resumed session picking up the original
+engine/provider/category, the source being cleaned up once a review finishes naturally but
+kept after a cancel, deleting a book cleaning up its flags/labels/sources/originals together,
+and every Data Generation mode routing to the right backend function with the right
+provider-specific key), and the FastAPI endpoints via `TestClient`.
 
 **Shipped, in build order:** upload/search/chat webapp → per-page chunking with OCR
 confidence → async uploads → page-by-page review mode → live progress console → book
@@ -354,7 +424,14 @@ original upload - see `sources.py` above) → **view/export original + labels**:
 per-book retention of the original uploaded file (`originals.py`, a separate module from
 `sources.py` since the retention lifecycles genuinely differ) plus a free-form key/value
 label system (`book_labels` table) for organising the library beyond category/ready-for-
-publish.
+publish → **Data Generation modes**: copy-paste (pure retrieval) alongside a reworked
+generative mode that now preserves source wording verbatim instead of paraphrasing it, plus
+two new generative sub-modes - cross-book flow-linking, and two new *media* outputs (an
+OpenAI-generated illustrative image, and a narrated vertical video slideshow assembled with
+`ffmpeg`) - all four generative sub-modes mutually exclusive. Replaced the old synchronous
+`POST /api/chat` with a background job + poll endpoint (`POST`/`GET /api/generate`), the
+same pattern `/api/upload` already used, since image/video generation can take long enough
+to risk the same tunnel-timeout problem that pattern was built to avoid.
 
 **Known limitations:**
 
@@ -436,10 +513,30 @@ publish.
   (no `tesseract` binary in that runtime), and background upload jobs don't survive a
   serverless function returning. Good for a quick UI look, not for real use — the `local`
   deploy target is the fully-supported path.
-- `/api/chat` (Data Generation) is a single synchronous request — for a very large matched-
-  source set this could in principle hit the same long-connection/timeout problem uploads
-  used to have; not yet observed in practice, and the same background-job pattern used for
-  uploads would be the fix if it comes up.
+- **Video mode is a narrated slideshow, not AI-generated video.** No text-to-video provider
+  (Runway, Pika, Sora, ...) is wired into this app - `content_studio.generate_video()` writes
+  a short script, generates one still image, narrates it with Azure TTS, and assembles the
+  two into a vertical mp4 with `ffmpeg`. Worth knowing if "create a video clip" was read as
+  "generate an actual AI video" - it's a real, working video, just not that.
+- **Image/video generation always needs an OpenAI key, regardless of the text-mode provider
+  setting.** Anthropic has no image-generation API, so Data Generation's image and video
+  modes both call OpenAI directly for the image step even when "Claude" is selected for text.
+- **`data/generated_images/`/`data/generated_videos/` are never garbage-collected**, and
+  unlike `tts.py`'s/`convert.py`'s content-hash caches, nothing here is deduplicated either -
+  regenerating the same instruction is expected to produce different output (the whole point
+  of generative image/video), so every call saves a fresh file. Same "no automatic cleanup"
+  tradeoff already accepted for `data/images/`, `data/sources/`, and `data/originals/`, but
+  with no dedup on top to at least limit how fast it grows.
+- **Video generation needs `ffmpeg` on the server's `PATH`** (already an existing
+  `webapp/Dockerfile`/`deploy.sh` dependency, previously installed only for anticipated
+  future use - now actually used) - `content_studio._assemble_video()` raises a clear
+  `RuntimeError` if it's missing rather than a raw `FileNotFoundError`.
+- **Neither OpenAI's image API nor the video-assembly pipeline has been run end-to-end
+  against a real key/real ffmpeg-with-real-generated-inputs in the environment this was
+  built in** (no OpenAI/Azure Speech key was available) - the image/video *code paths* are
+  tested with mocked provider responses plus a real `ffmpeg`/`ffprobe` assembly step (see
+  "Current state" above), same "structurally verified, not accuracy-verified" caveat the
+  pipeline's own vision-engine limitation already carries.
 - **Pipeline: short-text language tagging can misfire.** `langdetect` is a statistical
   n-gram model and occasionally misclassifies short titles (a 6-word English heading was
   tagged as German in testing); fine on full sentences, shakier under ~10 words.

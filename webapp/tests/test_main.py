@@ -30,6 +30,22 @@ def _upload_and_wait(client, timeout=10, **kwargs):
     raise TimeoutError(f"upload job {job_id} did not finish within {timeout}s")
 
 
+def _generate_and_wait(client, timeout=10, **kwargs):
+    """Same job/poll pattern as _upload_and_wait above, for
+    POST /api/generate - see main.py's "Data Generation" section."""
+    resp = client.post("/api/generate", **kwargs)
+    assert resp.status_code == 200, resp.text
+    job_id = resp.json()["job_id"]
+
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        poll = client.get(f"/api/generate/{job_id}")
+        if poll.status_code != 200 or poll.json().get("status") != "processing":
+            return poll
+        time.sleep(0.05)
+    raise TimeoutError(f"content-generation job {job_id} did not finish within {timeout}s")
+
+
 def test_upload_and_search_roundtrip(tmp_path, monkeypatch):
     client = _client(tmp_path, monkeypatch)
     resp = _upload_and_wait(
@@ -213,41 +229,62 @@ def test_upload_multi_paragraph_txt_can_produce_multiple_chunks(tmp_path, monkey
     assert [c["page_number"] for c in chunks] == list(range(1, len(chunks) + 1))
 
 
-def test_chat_returns_no_sources_message_when_store_is_empty(tmp_path, monkeypatch):
+# --- Data Generation (POST /api/generate) ---
+
+def test_generate_copy_paste_returns_no_sources_message_when_store_is_empty(tmp_path, monkeypatch):
     client = _client(tmp_path, monkeypatch)
-    resp = client.post("/api/chat", json={"instruction": "compile a book about anything"})
-    assert resp.status_code == 200
+    resp = _generate_and_wait(
+        client, json={"instruction": "anything", "output_mode": "copy_paste"})
+    assert resp.status_code == 200, resp.text
     assert resp.json()["sources"] == []
+    assert resp.json()["kind"] == "text"
 
 
-def test_chat_returns_503_when_sources_match_but_no_api_key(tmp_path, monkeypatch):
+def test_generate_copy_paste_never_needs_an_api_key(tmp_path, monkeypatch):
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
-    client = _client(tmp_path, monkeypatch)
-    _upload_and_wait(
-        client,
-        files={"file": ("parenting.txt", b"Tips on how to raise a child.", "text/plain")},
-    )
-    resp = client.post("/api/chat", json={"instruction": "compile a book about raising a child"})
-    assert resp.status_code == 503
-    assert "ANTHROPIC_API_KEY" in resp.json()["detail"]
-
-
-def test_chat_with_openai_provider_returns_503_when_no_openai_key(tmp_path, monkeypatch):
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     client = _client(tmp_path, monkeypatch)
     _upload_and_wait(
         client,
         files={"file": ("parenting.txt", b"Tips on how to raise a child.", "text/plain")},
     )
-    resp = client.post(
-        "/api/chat",
-        json={"instruction": "compile a book about raising a child", "provider": "openai"},
+    resp = _generate_and_wait(
+        client, json={"instruction": "raising a child", "output_mode": "copy_paste"})
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["sources"] == ["parenting.txt (page 1/1)"]
+    assert "Tips on how to raise a child." in resp.json()["markdown"]
+
+
+def test_generate_text_mode_returns_503_when_sources_match_but_no_api_key(tmp_path, monkeypatch):
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    client = _client(tmp_path, monkeypatch)
+    _upload_and_wait(
+        client,
+        files={"file": ("parenting.txt", b"Tips on how to raise a child.", "text/plain")},
+    )
+    resp = _generate_and_wait(
+        client, json={"instruction": "compile a book about raising a child", "output_mode": "generative"})
+    assert resp.status_code == 503
+    assert "ANTHROPIC_API_KEY" in resp.json()["detail"]
+
+
+def test_generate_text_mode_with_openai_provider_returns_503_when_no_openai_key(tmp_path, monkeypatch):
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    client = _client(tmp_path, monkeypatch)
+    _upload_and_wait(
+        client,
+        files={"file": ("parenting.txt", b"Tips on how to raise a child.", "text/plain")},
+    )
+    resp = _generate_and_wait(
+        client,
+        json={"instruction": "compile a book about raising a child", "output_mode": "generative",
+              "provider": "openai"},
     )
     assert resp.status_code == 503
     assert "OPENAI_API_KEY" in resp.json()["detail"]
 
 
-def test_chat_succeeds_with_browser_supplied_key(tmp_path, monkeypatch):
+def test_generate_text_mode_succeeds_with_browser_supplied_key(tmp_path, monkeypatch):
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     client = _client(tmp_path, monkeypatch)
     _upload_and_wait(
@@ -259,29 +296,147 @@ def test_chat_succeeds_with_browser_supplied_key(tmp_path, monkeypatch):
 
     def fake_compile_book(instruction, conn, provider=None, model=None, api_key=None, **kwargs):
         captured["api_key"] = api_key
+        captured["mode"] = kwargs.get("mode")
         return {"markdown": "book", "sources": ["parenting.txt (page 1/1)"]}
 
     monkeypatch.setattr(main_module.book_compiler, "compile_book", fake_compile_book)
 
-    resp = client.post(
-        "/api/chat",
-        json={"instruction": "compile a book about raising a child", "anthropic_api_key": "browser-key-456"},
+    resp = _generate_and_wait(
+        client,
+        json={"instruction": "compile a book about raising a child", "output_mode": "generative",
+              "anthropic_api_key": "browser-key-456"},
     )
-    assert resp.status_code == 200
+    assert resp.status_code == 200, resp.text
     assert captured["api_key"] == "browser-key-456"
+    assert captured["mode"] == "text"  # default generative_mode
+    assert resp.json()["kind"] == "text"
 
 
-def test_chat_rejects_unknown_provider_with_400(tmp_path, monkeypatch):
+def test_generate_flow_mode_passes_flow_as_the_compile_book_mode(tmp_path, monkeypatch):
     client = _client(tmp_path, monkeypatch)
     _upload_and_wait(
         client,
         files={"file": ("parenting.txt", b"Tips on how to raise a child.", "text/plain")},
     )
-    resp = client.post(
-        "/api/chat",
-        json={"instruction": "compile a book about raising a child", "provider": "bogus"},
+
+    captured = {}
+
+    def fake_compile_book(instruction, conn, provider=None, model=None, api_key=None, **kwargs):
+        captured["mode"] = kwargs.get("mode")
+        return {"markdown": "flow", "sources": ["parenting.txt (page 1/1)"]}
+
+    monkeypatch.setattr(main_module.book_compiler, "compile_book", fake_compile_book)
+
+    resp = _generate_and_wait(
+        client,
+        json={"instruction": "raising a child", "output_mode": "generative", "generative_mode": "flow",
+              "anthropic_api_key": "fake"},
     )
+    assert resp.status_code == 200, resp.text
+    assert captured["mode"] == "flow"
+
+
+def test_generate_rejects_unknown_output_mode_with_400(tmp_path, monkeypatch):
+    client = _client(tmp_path, monkeypatch)
+    resp = _generate_and_wait(client, json={"instruction": "anything", "output_mode": "bogus"})
     assert resp.status_code == 400
+
+
+def test_generate_rejects_unknown_generative_mode_with_400(tmp_path, monkeypatch):
+    client = _client(tmp_path, monkeypatch)
+    resp = _generate_and_wait(
+        client, json={"instruction": "anything", "output_mode": "generative", "generative_mode": "bogus"})
+    assert resp.status_code == 400
+
+
+def test_generate_image_mode_calls_content_studio_and_returns_its_result(tmp_path, monkeypatch):
+    client = _client(tmp_path, monkeypatch)
+
+    captured = {}
+
+    def fake_generate_image(instruction, conn, api_key=None, **kwargs):
+        captured["api_key"] = api_key
+        return {"image_url": "/generated-images/abc.png", "prompt": "a prompt", "sources": []}
+
+    monkeypatch.setattr(main_module.content_studio, "generate_image", fake_generate_image)
+
+    resp = _generate_and_wait(
+        client,
+        json={"instruction": "a peaceful forest", "output_mode": "generative", "generative_mode": "image",
+              "openai_api_key": "browser-openai-key"},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["kind"] == "image"
+    assert resp.json()["image_url"] == "/generated-images/abc.png"
+    assert captured["api_key"] == "browser-openai-key"
+
+
+def test_generate_image_mode_uses_openai_key_regardless_of_provider(tmp_path, monkeypatch):
+    # image generation always needs OpenAI (Anthropic has no image API),
+    # even when `provider` (which picks the *text*-mode model) is Claude.
+    client = _client(tmp_path, monkeypatch)
+    captured = {}
+
+    def fake_generate_image(instruction, conn, api_key=None, **kwargs):
+        captured["api_key"] = api_key
+        return {"image_url": "/generated-images/abc.png", "prompt": "a prompt", "sources": []}
+
+    monkeypatch.setattr(main_module.content_studio, "generate_image", fake_generate_image)
+
+    resp = _generate_and_wait(
+        client,
+        json={"instruction": "a peaceful forest", "output_mode": "generative", "generative_mode": "image",
+              "provider": "anthropic", "anthropic_api_key": "claude-key", "openai_api_key": "openai-key"},
+    )
+    assert resp.status_code == 200, resp.text
+    assert captured["api_key"] == "openai-key"
+
+
+def test_generate_image_mode_returns_503_when_content_studio_raises_runtime_error(tmp_path, monkeypatch):
+    client = _client(tmp_path, monkeypatch)
+
+    def fake_generate_image(instruction, conn, api_key=None, **kwargs):
+        raise RuntimeError("Image generation needs an OpenAI API key")
+
+    monkeypatch.setattr(main_module.content_studio, "generate_image", fake_generate_image)
+
+    resp = _generate_and_wait(
+        client, json={"instruction": "a peaceful forest", "output_mode": "generative", "generative_mode": "image"})
+    assert resp.status_code == 503
+    assert "OpenAI" in resp.json()["detail"]
+
+
+def test_generate_video_mode_calls_content_studio_and_returns_its_result(tmp_path, monkeypatch):
+    client = _client(tmp_path, monkeypatch)
+
+    captured = {}
+
+    def fake_generate_video(instruction, conn, **kwargs):
+        captured.update(kwargs)
+        return {"video_url": "/generated-videos/abc.mp4", "script": "narration", "image_url": "/generated-images/x.png",
+                "sources": []}
+
+    monkeypatch.setattr(main_module.content_studio, "generate_video", fake_generate_video)
+
+    resp = _generate_and_wait(
+        client,
+        json={"instruction": "a short lesson", "output_mode": "generative", "generative_mode": "video",
+              "anthropic_api_key": "claude-key", "openai_api_key": "openai-key",
+              "azure_speech_key": "azure-key", "azure_speech_region": "eastus"},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["kind"] == "video"
+    assert resp.json()["video_url"] == "/generated-videos/abc.mp4"
+    assert captured["text_api_key"] == "claude-key"
+    assert captured["image_api_key"] == "openai-key"
+    assert captured["azure_speech_key"] == "azure-key"
+    assert captured["azure_speech_region"] == "eastus"
+
+
+def test_generate_unknown_job_id_returns_404(tmp_path, monkeypatch):
+    client = _client(tmp_path, monkeypatch)
+    resp = client.get("/api/generate/not-a-real-job-id")
+    assert resp.status_code == 404
 
 
 # --- Page-by-page review flow (/api/review/*) ---

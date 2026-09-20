@@ -187,3 +187,113 @@ def test_compile_book_uses_openai_when_provider_selected(monkeypatch, tmp_path):
     )
     assert result["sources"] == ["parenting.md (page 1/1)"]
     assert "via GPT" in result["markdown"]
+
+
+def test_compile_book_rejects_unknown_mode(tmp_path):
+    conn = _tmp_conn(tmp_path)
+    _insert(conn, "parenting.md", "Tips on how to raise a child with patience.")
+    try:
+        book_compiler.compile_book(
+            "compile a book about raising a child", conn, api_key="fake", mode="bogus")
+        assert False, "expected ValueError"
+    except ValueError as e:
+        assert "bogus" in str(e)
+
+
+def test_compile_book_flow_mode_uses_the_flow_system_prompt(monkeypatch, tmp_path):
+    conn = _tmp_conn(tmp_path)
+    _insert(conn, "parenting.md", "Tips on how to raise a child with patience.")
+
+    captured = {}
+
+    def _capturing_create(self, **kwargs):
+        captured["system"] = kwargs["system"]
+        return SimpleNamespace(content=[_FakeTextBlock("# Flow")])
+
+    monkeypatch.setattr(_FakeMessages, "create", _capturing_create)
+    monkeypatch.setattr(book_compiler, "Anthropic", lambda api_key=None: _FakeAnthropic("# Flow"))
+
+    book_compiler.compile_book("compile about raising a child", conn, api_key="fake", mode="flow")
+
+    assert captured["system"] == book_compiler._FLOW_SYSTEM_PROMPT
+    assert "different" in captured["system"]
+
+
+def test_compile_book_video_script_mode_uses_the_video_script_system_prompt(monkeypatch, tmp_path):
+    conn = _tmp_conn(tmp_path)
+    _insert(conn, "parenting.md", "Tips on how to raise a child with patience.")
+
+    captured = {}
+
+    def _capturing_create(self, **kwargs):
+        captured["system"] = kwargs["system"]
+        return SimpleNamespace(content=[_FakeTextBlock("Some narration.")])
+
+    monkeypatch.setattr(_FakeMessages, "create", _capturing_create)
+    monkeypatch.setattr(book_compiler, "Anthropic", lambda api_key=None: _FakeAnthropic("Some narration."))
+
+    result = book_compiler.compile_book(
+        "compile about raising a child", conn, api_key="fake", mode="video_script")
+
+    assert captured["system"] == book_compiler._VIDEO_SCRIPT_SYSTEM_PROMPT
+    assert result["markdown"] == "Some narration."
+
+
+def test_retrieve_matches_returns_full_documents_with_labels(tmp_path):
+    conn = _tmp_conn(tmp_path)
+    _insert(conn, "parenting.md", "Tips on how to raise a child with patience.")
+
+    docs = book_compiler.retrieve_matches("raising a child", conn)
+
+    assert len(docs) == 1
+    assert docs[0]["source_filename"] == "parenting.md"
+    assert docs[0]["label"] == "parenting.md (page 1/1)"
+    assert docs[0]["markdown"] == "Tips on how to raise a child with patience."
+
+
+def test_compile_copy_paste_returns_verbatim_content_with_citations(tmp_path):
+    conn = _tmp_conn(tmp_path)
+    _insert(conn, "parenting.md", "Tips on how to raise a child with patience.")
+    _insert(conn, "cooking.md", "A recipe for pasta.")
+
+    result = book_compiler.compile_copy_paste(
+        "compile a book from all the files containing content about how to raise a child", conn)
+
+    assert result["sources"] == ["parenting.md (page 1/1)"]
+    assert "Tips on how to raise a child with patience." in result["markdown"]
+    assert "## parenting.md (page 1/1)" in result["markdown"]
+    assert "pasta" not in result["markdown"]  # the non-matching file is never included
+
+
+def test_compile_copy_paste_returns_no_sources_message_when_nothing_matches(tmp_path):
+    conn = _tmp_conn(tmp_path)
+    _insert(conn, "cooking.md", "A recipe for pasta.")
+    result = book_compiler.compile_copy_paste("compile a book about dinosaurs", conn)
+    assert result["sources"] == []
+    assert "No matching" in result["markdown"]
+
+
+def test_compile_copy_paste_never_calls_a_model(monkeypatch, tmp_path):
+    # no API key needed at all - this mode is pure retrieval. Poisoning both
+    # clients guarantees a bug that accidentally calls one fails loudly.
+    conn = _tmp_conn(tmp_path)
+    _insert(conn, "parenting.md", "Tips on how to raise a child with patience.")
+
+    def _boom(*args, **kwargs):
+        raise AssertionError("compile_copy_paste must never call a model client")
+
+    monkeypatch.setattr(book_compiler, "Anthropic", _boom)
+    monkeypatch.setattr(book_compiler, "OpenAI", _boom)
+
+    result = book_compiler.compile_copy_paste("raising a child", conn)
+    assert result["sources"] == ["parenting.md (page 1/1)"]
+
+
+def test_compile_copy_paste_preserves_embedded_image_links(tmp_path):
+    # unlike compile_book (which sends text to a model and strips images
+    # since they're meaningless as prose), copy-paste is a literal
+    # reproduction of the stored content - images should render normally.
+    conn = _tmp_conn(tmp_path)
+    _insert(conn, "book.pdf", "Notes on raising a child.\n\n![handwriting](/images/abc123.jpg)")
+    result = book_compiler.compile_copy_paste("raising a child", conn)
+    assert "/images/abc123.jpg" in result["markdown"]

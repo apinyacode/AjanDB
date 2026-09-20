@@ -7,7 +7,8 @@ FROM python:3.11-slim
 
 # Same system packages deploy.sh's deploy_local() apt-installs for the local
 # target: Tesseract (+ English/Thai/Chinese language packs) for the
-# classical OCR engine, ffmpeg for future audio/video handling.
+# classical OCR engine, ffmpeg to assemble Data Generation's video mode
+# (see content_studio.py).
 RUN apt-get update -qq && apt-get install -y --no-install-recommends \
     tesseract-ocr tesseract-ocr-eng tesseract-ocr-tha tesseract-ocr-chi-sim \
     ffmpeg \

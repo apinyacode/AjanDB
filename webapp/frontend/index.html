@@ -37,7 +37,7 @@
   </div>
   <div class="row">
     <label for="azure-speech-key-input">Azure Speech key</label>
-    <input type="password" id="azure-speech-key-input" placeholder="for Read aloud" autocomplete="off">
+    <input type="password" id="azure-speech-key-input" placeholder="for Read aloud / video narration" autocomplete="off">
   </div>
   <div class="row">
     <label for="azure-speech-region-input">Azure Speech region</label>
@@ -167,18 +167,67 @@
 
   <section id="chat" class="tab">
     <h2>Data Generation</h2>
-    <p class="hint">Describe a topic; every stored file that matches gets synthesised into one generated book.</p>
+    <p class="hint">Describe a topic; every stored file that matches becomes the raw material for the mode below.</p>
     <textarea id="chat-input" rows="3" placeholder="e.g. Compile a book from all the files containing content about how to raise a child"></textarea>
+
     <div class="row">
-      <label for="chat-provider-select">Model</label>
+      <label class="radio-label">
+        <input type="radio" name="output-mode" id="output-mode-copy-paste" value="copy_paste">
+        Copy-paste
+      </label>
+      <label class="radio-label">
+        <input type="radio" name="output-mode" id="output-mode-generative" value="generative" checked>
+        Generative
+      </label>
+    </div>
+    <p class="hint small">
+      <strong>Copy-paste</strong> lists the exact matching content verbatim, with a reference for
+      each piece - no model call, nothing reworded.
+      <strong>Generative</strong> creates new material built around the matching content, keeping
+      its original wording unchanged wherever it's used, but generative in what's added around it.
+    </p>
+
+    <div id="generative-mode-row" class="row">
+      <label class="radio-label">
+        <input type="radio" name="generative-mode" id="generative-mode-text" value="text" checked>
+        Text
+      </label>
+      <label class="radio-label">
+        <input type="radio" name="generative-mode" id="generative-mode-flow" value="flow">
+        Link across books (flow)
+      </label>
+      <label class="radio-label">
+        <input type="radio" name="generative-mode" id="generative-mode-image" value="image">
+        Create image
+      </label>
+      <label class="radio-label">
+        <input type="radio" name="generative-mode" id="generative-mode-video" value="video">
+        Create short video (TikTok-style)
+      </label>
+    </div>
+    <p id="generative-mode-hint" class="hint small"></p>
+
+    <div class="row">
+      <label for="chat-provider-select">Text model</label>
       <select id="chat-provider-select">
         <option value="anthropic">Claude</option>
         <option value="openai">GPT (OpenAI)</option>
       </select>
-      <button id="chat-btn">Compile</button>
+      <button id="chat-btn">Generate</button>
     </div>
     <p id="chat-status" class="status"></p>
-    <pre id="chat-output" class="markdown-preview"></pre>
+    <pre id="chat-console" class="console hidden"></pre>
+
+    <pre id="chat-output" class="markdown-preview hidden"></pre>
+    <div id="chat-image-result" class="hidden">
+      <img id="chat-image-el" alt="Generated image">
+      <p id="chat-image-prompt" class="hint small"></p>
+    </div>
+    <div id="chat-video-result" class="hidden">
+      <video id="chat-video-el" controls></video>
+      <p class="hint small">Narration script:</p>
+      <pre id="chat-video-script" class="markdown-preview"></pre>
+    </div>
   </section>
 </main>
 
