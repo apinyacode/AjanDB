@@ -86,8 +86,10 @@ export AZURE_SPEECH_REGION=eastus     # whichever region your Speech resource is
 ```
 
 Alternatively, `bash deploy.sh` installs system dependencies, creates the venv, and starts
-the server for you — see `deploy.sh --help` and the script itself for the `vercel` target
-and its current limitations.
+the server for you, then opens a public Cloudflare tunnel on top of it — add `--no-tunnel`
+to skip that and keep the server local-only (`http://localhost:8000/`), which sidesteps
+tunnel connectivity issues entirely for local testing. See the script itself for the
+`vercel` target and its current limitations.
 
 **Docker** (deploy artifact for a future hosted target — build from the **repo root**,
 not from `webapp/`, since the image needs `../pdf_to_docx_pipeline` too):

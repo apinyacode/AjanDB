@@ -7,12 +7,21 @@
 #                                   #   This is the fully-supported path -
 #                                   #   everything (uploads, OCR, search,
 #                                   #   compile) works exactly as developed.
+#   bash deploy.sh --no-tunnel     # same as above but skips cloudflared -
+#                                   #   the server stays reachable only at
+#                                   #   http://localhost:8000/ on this
+#                                   #   machine. No tunnel flakiness to
+#                                   #   debug at all, at the cost of only
+#                                   #   this machine being able to reach it
+#                                   #   (no other device, no public URL to
+#                                   #   share). Good for local-only testing.
 #   bash deploy.sh vercel          # deploys to Vercel with `vercel deploy`.
 #                                   #   Read the warning it prints before
 #                                   #   using this - see "Known limitations
 #                                   #   of the vercel target" below.
 #
-# Flags (either target): --no-pull skips `git pull`. --yes skips the
+# Flags (either target): --no-pull skips `git pull`. --no-tunnel (local
+# target only) skips the cloudflared tunnel - see above. --yes skips the
 # interactive confirmation prompt (vercel target only, for scripted use).
 # vercel target only: --prod passes --prod through to `vercel deploy`.
 #
@@ -52,10 +61,12 @@ set -euo pipefail
 # where they're parsed again for the real work). ---
 TARGET="local"
 NO_PULL=0
+NO_TUNNEL=0
 for arg in "$@"; do
   case "$arg" in
     local|vercel) TARGET="$arg" ;;
     --no-pull) NO_PULL=1 ;;
+    --no-tunnel) NO_TUNNEL=1 ;;
   esac
 done
 
@@ -132,6 +143,14 @@ deploy_local() {
     exit 1
   fi
   echo "    Running (pid $UVICORN_PID). Logs: /tmp/ajandb_uvicorn.log"
+
+  if [ "$NO_TUNNEL" = "1" ]; then
+    echo "==> Skipping tunnel (--no-tunnel)."
+    echo "    Open http://localhost:$PORT/ on this machine - no public URL,"
+    echo "    no tunnel to drop or debug."
+    echo "    Stop the server with: kill $UVICORN_PID   (or: pkill -f 'uvicorn backend.main:app')"
+    return 0
+  fi
 
   echo "==> Setting up cloudflared..."
   CLOUDFLARED_BIN="$WEBAPP_DIR/cloudflared"

@@ -491,7 +491,9 @@ a vision-LLM JSON-parsing crash** on a stray unescaped quote in transcribed text
 failure of this shape - a stray backslash was already handled) → **per-page editing in Data
 Search**: each page in a book's expanded "View pages" list can now be corrected in place
 (`PUT /api/documents/{id}`), including clearing its "Needs review" flag, without redoing the
-original page-by-page review.
+original page-by-page review → **`deploy.sh --no-tunnel`**: runs the same local setup
+(system deps, venv, restart uvicorn) without opening a Cloudflare tunnel, for local-only
+testing that isn't exposed to tunnel connectivity issues at all.
 
 **Known limitations:**
 
