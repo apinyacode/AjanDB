@@ -157,6 +157,25 @@ else so ordinary typing/clicking still reaches the textarea underneath. A third 
 confidence/multi-signal "likely wrong" flags - used to render here too; removed (see "Key
 features" below) because highlighting large or near-whole-page spans wasn't a useful signal.
 
+**Fit-to-screen + zoom** (review panel) — `--review-area-height`, a `:root`-level CSS
+variable computed with `clamp(min, calc(100dvh - reserved-px), max)` (a smaller `reserved-px`
+and `max` under a `max-width: 700px` media query, since `.review-columns` wraps its two
+columns to stacked rows there instead of side-by-side), drives both the scanned-image
+viewport's and the editable-text area's height, so they're always equal and sized to
+whatever's actually visible on that device - `dvh` rather than `vh` specifically because
+mobile browsers' address-bar chrome makes a flat `100vh` taller than what's really on screen.
+Pure CSS, recalculates live on resize/rotation with no JS. **Zoom** (one shared control for
+both sides, not two independent ones, since the point is magnifying the same spot on each
+for comparison) works differently per side because of what each one *is*: the image sits in
+an inner "stage" div whose own width/height percentage app.js sets directly (a real
+layout-size change, not a `transform: scale()` - a transform's post-scale bounds turned out
+not to be reliably picked up by the viewport's `overflow: auto` for scrolling, while an
+actual size change always is) inside an `object-fit: contain` image that fills 100% of that
+stage; the text is zoomed by scaling a shared `--zoom-font-size` CSS variable both the
+highlight overlay and the textarea read, which is required to keep their font metrics
+identical (the same invariant the overlay trick above depends on) - scaling only one of the
+two would break the overlay's alignment with the real text.
+
 ## Key features
 
 - **Data Store** — upload `.pdf`/`.docx`/`.txt`/`.md`. PDFs go through the pipeline above
@@ -166,7 +185,12 @@ features" below) because highlighting large or near-whole-page spans wasn't a us
 - **Page-by-page review** — converts and shows one PDF page at a time (scan image left,
   editable markdown right) before saving; nothing hits the database until **Approve & Save**,
   and each approved page is saved immediately (not batched), so cancelling partway through
-  a long book keeps everything approved so far.
+  a long book keeps everything approved so far. Both sides default to a height that fits
+  whatever's actually left of the device's screen (a `--review-area-height` CSS variable,
+  `clamp(...)`-computed from `100dvh` rather than a flat guess like a fixed `65vh` - see
+  "Frontend" below), and a shared **Zoom** control (50%-250%) magnifies the scanned image and
+  the editable text together, for comparing fine detail (e.g. a handwriting stroke against
+  its transcription) more closely than the fitted default allows.
 - **Multi-signal "likely wrong" flagging** (review flow only, not bulk upload — see below;
   opt-in via the Data Store tab's **Second-model validation** checkbox, off by default — see
   below) — when turned on, `flagged_snippets` becomes a *union* of up to four independent
@@ -431,7 +455,10 @@ OpenAI-generated illustrative image, and a narrated vertical video slideshow ass
 `ffmpeg`) - all four generative sub-modes mutually exclusive. Replaced the old synchronous
 `POST /api/chat` with a background job + poll endpoint (`POST`/`GET /api/generate`), the
 same pattern `/api/upload` already used, since image/video generation can take long enough
-to risk the same tunnel-timeout problem that pattern was built to avoid.
+to risk the same tunnel-timeout problem that pattern was built to avoid → **review panel
+fit-to-screen + zoom**: the scanned-image and editable-text areas now size to a shared,
+device-aware `--review-area-height` (via `dvh`/`clamp()`) instead of a flat `65vh` guess, and
+a shared zoom control (50%-250%) magnifies both sides together for closer comparison.
 
 **Known limitations:**
 
@@ -494,6 +521,10 @@ to risk the same tunnel-timeout problem that pattern was built to avoid.
 - Thai spell-check is a dictionary lookup, not language understanding — proper nouns, slang,
   and loanwords absent from the dictionary get flagged like typos too. Advisory only, never
   blocks approval.
+- The review panel's zoom level is a plain in-memory JS variable, not persisted to
+  `localStorage` - it survives flipping between pages within one review session (deliberately
+  not reset per page, since a reviewer who zoomed in to check detail likely wants to keep
+  that while working through a book), but resets to 100% on a full page reload.
 - Search/retrieval for the book compiler is keyword-based (SQLite FTS5), not semantic. Fine
   at personal-library scale; a vector index would be the natural upgrade if keyword search
   starts missing relevant files. The compiler also sends at most 20 matching chunks (8000

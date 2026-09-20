@@ -101,10 +101,21 @@
         <strong id="review-progress"></strong>
         <span id="review-badges"></span>
       </div>
+      <div class="row review-zoom-row">
+        <span class="hint small">Zoom (scanned page + editable text):</span>
+        <button id="review-zoom-out-btn" class="ghost" type="button" aria-label="Zoom out">&minus;</button>
+        <span id="review-zoom-level">100%</span>
+        <button id="review-zoom-in-btn" class="ghost" type="button" aria-label="Zoom in">+</button>
+        <button id="review-zoom-reset-btn" class="ghost" type="button">Reset</button>
+      </div>
       <div class="review-columns">
         <div class="review-col">
           <h3>Scanned page</h3>
-          <img id="review-image" alt="Scanned page preview">
+          <div id="review-image-viewport" class="review-image-viewport">
+            <div id="review-image-stage" class="review-image-stage">
+              <img id="review-image" alt="Scanned page preview">
+            </div>
+          </div>
         </div>
         <div class="review-col">
           <div class="row review-col-header">

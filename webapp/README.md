@@ -9,7 +9,9 @@ searchable markdown, and compiling a book from whatever matches a topic.
   `../pdf_to_docx_pipeline` with a choice of engine (free local OCR, or a per-page
   vision-LLM call for messy scans/non-Latin scripts).
 - **Page-by-page review** (optional, PDF only) — approve or edit each page's converted
-  text before it's saved. Thai spelling mistakes get a red wavy underline you can click for
+  text before it's saved. The scanned page and the editable text both size to fit your
+  screen by default, and a shared **Zoom** control (50%-250%) magnifies both together for
+  comparing fine detail. Thai spelling mistakes get a red wavy underline you can click for
   suggested corrections, word-processor style (no more scanning a summary list at the bottom
   to find the word). Optional **Second-model validation** cross-checks any page below 100%
   confidence against a second model/engine (plus an on-demand manual check, always available

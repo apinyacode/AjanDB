@@ -279,6 +279,7 @@ const reviewPanel = document.getElementById("review-panel");
 const reviewProgress = document.getElementById("review-progress");
 const reviewBadges = document.getElementById("review-badges");
 const reviewImage = document.getElementById("review-image");
+const reviewImageStage = document.getElementById("review-image-stage");
 const reviewMarkdown = document.getElementById("review-markdown");
 const reviewMarkdownHighlight = document.getElementById("review-markdown-highlight");
 const spellcheckMenu = document.getElementById("spellcheck-menu");
@@ -294,10 +295,51 @@ const verifyPanel = document.getElementById("verify-panel");
 const verifyAgreementLabel = document.getElementById("verify-agreement-label");
 const verifyDiffEl = document.getElementById("verify-diff");
 const verifySuggestionHint = document.getElementById("verify-suggestion-hint");
+const reviewMarkdownEditor = document.querySelector(".markdown-editor");
+const reviewZoomOutBtn = document.getElementById("review-zoom-out-btn");
+const reviewZoomInBtn = document.getElementById("review-zoom-in-btn");
+const reviewZoomResetBtn = document.getElementById("review-zoom-reset-btn");
+const reviewZoomLevelEl = document.getElementById("review-zoom-level");
 
 let reviewSessionId = null;
 let reviewTotalPages = 0;
 let reviewTypos = [];
+
+// One shared zoom level for both sides of the comparison (scanned image +
+// editable text) rather than two independent controls, since the point is
+// magnifying the same spot on both at once for an easier side-by-side
+// check. The image is zoomed by growing/shrinking its "stage" div's own
+// width/height percentage (see .review-image-stage in style.css - a real
+// layout-size change, not a transform, so the viewport's overflow:auto
+// reliably picks it up for scrolling/panning once zoomed past 100%); the
+// text is zoomed by scaling the shared --zoom-font-size CSS variable both
+// the highlight overlay and the textarea read, which is required to keep
+// their font metrics identical (see markdown-editor's comment in
+// style.css) - scaling only one of the two would break the overlay's
+// alignment with the real text.
+const REVIEW_ZOOM_MIN = 0.5;
+const REVIEW_ZOOM_MAX = 2.5;
+const REVIEW_ZOOM_STEP = 0.1;
+const REVIEW_BASE_FONT_REM = 0.935;
+let reviewZoom = 1;
+
+function applyReviewZoom() {
+  const percent = `${Math.round(reviewZoom * 100)}%`;
+  reviewImageStage.style.width = percent;
+  reviewImageStage.style.height = percent;
+  reviewMarkdownEditor.style.setProperty("--zoom-font-size", `${REVIEW_BASE_FONT_REM * reviewZoom}rem`);
+  reviewZoomLevelEl.textContent = percent;
+}
+
+function setReviewZoom(nextZoom) {
+  reviewZoom = Math.min(REVIEW_ZOOM_MAX, Math.max(REVIEW_ZOOM_MIN, nextZoom));
+  applyReviewZoom();
+}
+
+reviewZoomInBtn.addEventListener("click", () => setReviewZoom(reviewZoom + REVIEW_ZOOM_STEP));
+reviewZoomOutBtn.addEventListener("click", () => setReviewZoom(reviewZoom - REVIEW_ZOOM_STEP));
+reviewZoomResetBtn.addEventListener("click", () => setReviewZoom(1));
+applyReviewZoom();
 
 // Re-renders the highlight overlay from the textarea's *current* value, so
 // fixing a misspelled word makes its underline disappear the moment the

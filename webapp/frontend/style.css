@@ -7,6 +7,23 @@
   --danger: #a3402c;
   --danger-bg: #fbeae6;
   --surface: rgba(128, 128, 128, 0.12);
+  /* The review panel's scanned-page and editable-text areas both size to
+     this, so they stay equal-height and fit whatever's actually left of
+     the device's viewport (dvh, not vh, since mobile browsers' address-bar
+     chrome makes 100vh taller than what's really visible) after the
+     header/controls around them - not a flat guess like a fixed 65vh that
+     overflows short screens and wastes space on tall ones. Recalculates
+     live on resize/rotation with no JS needed. */
+  --review-area-height: clamp(320px, calc(100dvh - 340px), 720px);
+}
+@media (max-width: 700px) {
+  :root {
+    /* Narrower than 700px, .review-columns below wraps the two columns to
+       stacked rows instead of side-by-side, so this same height applies
+       twice (once per column) - shrunk accordingly so both plus the
+       buttons below still fit a phone screen with reasonable scrolling. */
+    --review-area-height: clamp(220px, calc(100dvh - 380px), 45dvh);
+  }
 }
 @media (prefers-color-scheme: dark) {
   :root {
@@ -431,6 +448,25 @@ mark {
   margin-bottom: 0.75rem;
 }
 
+.review-zoom-row {
+  align-items: center;
+  gap: 0.4rem;
+  margin-bottom: 0.5rem;
+}
+
+.review-zoom-row button {
+  padding: 0.15rem 0.6rem;
+  font-size: 0.9rem;
+  line-height: 1.4;
+}
+
+#review-zoom-level {
+  font-size: 0.85rem;
+  min-width: 3.5ch;
+  text-align: center;
+  opacity: 0.85;
+}
+
 .review-columns {
   display: flex;
   gap: 1rem;
@@ -464,13 +500,33 @@ mark {
   font-size: 0.8rem;
 }
 
-#review-image {
-  width: 100%;
-  max-height: 65vh;
-  object-fit: contain;
+.review-image-viewport {
+  height: var(--review-area-height);
+  overflow: auto;
   border: 1px solid var(--border);
   border-radius: 6px;
   background: rgba(128, 128, 128, 0.08);
+}
+
+.review-image-stage {
+  /* Zoom works by growing/shrinking *this* box's own width/height
+     percentage (set inline by app.js) rather than a CSS transform - a
+     transform's post-scale bounds aren't reliably picked up by the
+     viewport's overflow:auto in every browser, while an actual layout-size
+     change always is, guaranteeing scrolling/panning works once zoomed
+     past 100%. At the default 100%/100%, this exactly fills the viewport. */
+  width: 100%;
+  height: 100%;
+}
+
+#review-image {
+  display: block;
+  width: 100%;
+  height: 100%;
+  /* Fits the whole page within its stage with no scrolling at 100% zoom
+     (whichever of width/height is more constraining wins, same as the
+     max-height+object-fit combination this replaced). */
+  object-fit: contain;
 }
 
 /* Overlay trick: an aria-hidden div sits exactly behind the textarea,
@@ -488,7 +544,11 @@ mark {
    through to the textarea underneath exactly as before. */
 .markdown-editor {
   position: relative;
-  height: 65vh;
+  height: var(--review-area-height);
+  /* Overridden inline (in rem) by the zoom controls in app.js - both
+     children below read the same variable, so they stay at identical font
+     metrics (see the overlay-trick comment above) at every zoom level. */
+  --zoom-font-size: 0.935rem;
 }
 
 .markdown-editor .markdown-highlight,
@@ -502,7 +562,7 @@ mark {
   border: 1px solid var(--border);
   border-radius: 6px;
   font-family: ui-monospace, monospace;
-  font-size: 0.935rem;
+  font-size: var(--zoom-font-size);
   line-height: 1.5;
   white-space: pre-wrap;
   word-wrap: break-word;
