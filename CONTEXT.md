@@ -42,6 +42,25 @@ GPT-4o) instead of local Tesseract — better on messy real-world scans and non-
 at the cost of tokens and an API key. `main.py` (classical) and `main_vision.py` (vision)
 both orchestrate `doc_items` output with a `progress` callback.
 
+**Vision-LLM JSON repair** (`vision_ocr._parse_model_json`) — the model is prompted to hand-
+format its own JSON response rather than using either provider's schema-enforced structured-
+output mode (a stronger fix worth considering if this keeps recurring - see Known
+limitations), so real transcribed page text (dense, bilingual, full of ordinary punctuation)
+occasionally breaks strict `json.loads`. Two independent, real production failures fixed so
+far, both from the model not escaping a character its own transcribed text legitimately
+contained: a stray backslash (`_repair_invalid_escapes` - doubles a backslash that isn't part
+of a valid JSON escape), and a stray double quote (`_repair_unescaped_quotes` - a one-pass
+scanner that tracks in-string state and treats a quote as real JSON syntax only when what
+follows it, after whitespace, is a plausible delimiter (`,`, `}`, `]`, `:`) - otherwise it's
+escaped as page content). Both are heuristics, not a real parser, so each documents its own
+known false-positive shape in its docstring. `_parse_model_json` tries the raw response, then
+each repair, then both combined, before giving up; if every attempt fails, the raised error
+shows text *around where the original response's own parse actually failed* (`_error_context`,
+a window centered on the JSONDecodeError's `.pos`) rather than always the first 300
+characters - the original version of this message showed the start of a page's transcribed
+text regardless of where the real mistake was, which was useless for a mistake far into a
+long page (as in the bug report that added the quote-repair above).
+
 **Zero-AI vs. small-local-model vs. LLM, precisely:** born-digital extraction, all OpenCV
 preprocessing, the handwriting heuristic, Thai spacing cleanup, and `.docx` assembly touch
 no model at all. Tesseract 5's recognition step is technically a small local LSTM (not pure
@@ -407,7 +426,7 @@ correct from passing tests alone.
 
 ## Current state
 
-**282 tests pass** (44 in `pdf_to_docx_pipeline`, 238 in `webapp`), covering: the SQLite/FTS5
+**286 tests pass** (48 in `pdf_to_docx_pipeline`, 238 in `webapp`), covering: the SQLite/FTS5
 layer and duplicate-page dedup, per-page/per-character-budget chunking and image handling,
 category suggestion with graceful no-key fallback, the book compiler's retrieval and error
 handling for both providers (plus its copy-paste/text/flow/video-script modes - which system
@@ -587,6 +606,18 @@ a shared zoom control (50%-250%) magnifies both sides together for closer compar
   environment this was built in (only mocked-response tests) — structurally verified, not
   accuracy-verified; run it on a few pages first and check the output before trusting it on
   a full document.
+- **Pipeline: the vision-LLM's JSON output is hand-formatted by the model, not
+  schema-enforced.** `_parse_model_json`'s repair layer (see "Vision-LLM JSON repair" above)
+  is a real, tested safety net for the two failure shapes actually seen in production so far
+  (stray backslash, stray quote), but it's fundamentally heuristic - a parse failure with some
+  other malformed-JSON shape is still possible on a long enough page with unusual
+  punctuation. Both Anthropic (forced tool-use) and OpenAI (`response_format:
+  json_schema`/strict mode) support having the API itself guarantee schema-valid output
+  instead of asking the model to write correct JSON text freehand, which would remove this
+  entire failure category rather than patching each new shape as it's hit - not done yet
+  since it's a bigger change to a live, paid-API-calling path that couldn't be verified
+  end-to-end without a real key in this environment (see the limitation above), and is worth
+  a deliberate, tested rollout of its own rather than folding into a bug-fix patch.
 
 - `docker build`/`docker run` for `webapp/Dockerfile` could not be run live in the sandbox
   this was built in — its container runtime's registry pulls are blocked by that

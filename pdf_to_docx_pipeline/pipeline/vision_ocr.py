@@ -104,20 +104,101 @@ def _repair_invalid_escapes(text: str) -> str:
     return _INVALID_ESCAPE_RE.sub(r"\\\\", text)
 
 
+# Characters that legitimately follow the closing quote of a JSON string
+# value (ignoring whitespace) - a comma or closing bracket/brace, or a
+# colon for a key string. Anything else means the quote we just saw wasn't
+# really closing the string.
+_STRING_END_FOLLOWERS = set(",}]:")
+
+
+def _repair_unescaped_quotes(text: str) -> str:
+    """Vision-LLM responses occasionally transcribe text containing a
+    literal double quote (a quoted phrase, a unit mark, an OCR artifact)
+    without escaping it - json.loads reads that quote as ending the string
+    early, then chokes on whatever real JSON follows with a misleading
+    "Expecting ',' delimiter" error nowhere near the actual mistake.
+
+    A real JSON parser can't be reimplemented here just to fix this, so
+    this walks the text once tracking whether it's inside a string, and
+    for every quote encountered there, peeks at what follows: a real
+    string-ending quote is always immediately followed (after whitespace)
+    by a delimiter (',', '}', ']', or ':' for a key) - anything else means
+    this quote is page content, not JSON syntax, so it's escaped in place
+    and the string is treated as still open. This is a heuristic, not a
+    real parser: a content quote that happens to be followed by one of
+    those delimiter characters (e.g. a quoted word right before a comma)
+    will still be misread as closing the string - same "best-effort, not
+    bulletproof" tradeoff _repair_invalid_escapes above already accepts."""
+    result = []
+    in_string = False
+    i, n = 0, len(text)
+    while i < n:
+        ch = text[i]
+        if in_string and ch == "\\" and i + 1 < n:
+            result.append(ch)
+            result.append(text[i + 1])
+            i += 2
+            continue
+        if ch == '"':
+            if in_string:
+                j = i + 1
+                while j < n and text[j] in " \t\r\n":
+                    j += 1
+                if j >= n or text[j] in _STRING_END_FOLLOWERS:
+                    in_string = False
+                    result.append(ch)
+                else:
+                    result.append('\\"')
+            else:
+                in_string = True
+                result.append(ch)
+            i += 1
+            continue
+        result.append(ch)
+        i += 1
+    return "".join(result)
+
+
+def _error_context(text: str, error: json.JSONDecodeError, window: int = 150) -> str:
+    """A window of `text` centered on where `error` actually occurred,
+    rather than always the start of the response - a response can run to
+    thousands of characters of transcribed page text, and the mistake is
+    routinely nowhere near the beginning (as a fixed "first 300 chars"
+    snippet used to show)."""
+    start = max(0, error.pos - window)
+    end = min(len(text), error.pos + window)
+    prefix = "..." if start > 0 else ""
+    suffix = "..." if end < len(text) else ""
+    return f"{prefix}{text[start:end]}{suffix}"
+
+
 def _parse_model_json(raw: str) -> dict:
     cleaned = _strip_code_fences(raw)
     try:
         return json.loads(cleaned)
-    except json.JSONDecodeError:
-        pass
-    try:
-        return json.loads(_repair_invalid_escapes(cleaned))
     except json.JSONDecodeError as e:
-        snippet = cleaned if len(cleaned) <= 300 else cleaned[:300] + "..."
-        raise ValueError(
-            f"Vision-LLM response wasn't valid JSON even after escape repair ({e}). "
-            f"Response started with: {snippet!r}"
-        ) from e
+        # `e` itself is deleted the moment this except block ends (normal
+        # Python behavior for `except ... as name`), so it's saved under a
+        # different name to report on below, after the repairs are tried.
+        original_error = e
+
+    for repaired in (
+        _repair_invalid_escapes(cleaned),
+        _repair_unescaped_quotes(cleaned),
+        _repair_unescaped_quotes(_repair_invalid_escapes(cleaned)),
+    ):
+        try:
+            return json.loads(repaired)
+        except json.JSONDecodeError:
+            continue  # a repair attempt can itself produce different (or worse) invalid
+                      # JSON - the diagnostic below always reports on the original,
+                      # unrepaired response, which is what a human debugging this needs
+                      # to see, not wherever a failed repair attempt happened to break.
+
+    raise ValueError(
+        f"Vision-LLM response wasn't valid JSON even after escape/quote repair ({original_error}). "
+        f"Text near the error: {_error_context(cleaned, original_error)!r}"
+    ) from original_error
 
 
 _API_KEY_ENV_VAR = {"anthropic": "ANTHROPIC_API_KEY", "openai": "OPENAI_API_KEY"}

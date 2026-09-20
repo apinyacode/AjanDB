@@ -200,6 +200,69 @@ def test_extract_page_with_vision_raises_clear_error_on_unparseable_response(mon
         assert "This is not JSON" in str(e)
 
 
+def test_extract_page_with_vision_repairs_unescaped_quote_in_transcribed_text(monkeypatch):
+    # Real failure mode reported in production: the model transcribes text
+    # containing a literal double quote (a quoted phrase, a unit mark)
+    # without escaping it, which json.loads reads as ending the string
+    # early - it then chokes on the real JSON that follows with a
+    # misleading "Expecting ',' delimiter" error far from the actual
+    # mistake. Deliberately hand-built (not via json.dumps) to reproduce
+    # that exact failure.
+    broken = '{"blocks": [{"type": "text", "language": "en", ' \
+             '"text": "He said "stop" and left.", "bbox": [0.1, 0.1, 0.5, 0.2]}]}'
+    monkeypatch.setattr(
+        vision_ocr, "Anthropic",
+        lambda api_key=None: _FakeAnthropic(broken),
+    )
+    blocks = vision_ocr.extract_page_with_vision(_tiny_png_bytes(), api_key="fake")
+    assert len(blocks) == 1
+    assert blocks[0]["text"] == 'He said "stop" and left.'
+
+
+def test_extract_page_with_vision_repairs_unescaped_quote_at_end_of_text(monkeypatch):
+    # The trickiest case for the quote-repair heuristic: a content quote
+    # immediately followed by the real closing quote and a comma, e.g. a
+    # transcribed word ending in a quotation mark right before the JSON
+    # value ends - two quotes in a row where only the second one is real.
+    broken = '{"blocks": [{"type": "text", "language": "en", ' \
+             '"text": "the sign read "EXIT"", "bbox": [0.1, 0.1, 0.5, 0.2]}]}'
+    monkeypatch.setattr(
+        vision_ocr, "Anthropic",
+        lambda api_key=None: _FakeAnthropic(broken),
+    )
+    blocks = vision_ocr.extract_page_with_vision(_tiny_png_bytes(), api_key="fake")
+    assert len(blocks) == 1
+    assert blocks[0]["text"] == 'the sign read "EXIT"'
+
+
+def test_repair_unescaped_quotes_leaves_already_valid_json_untouched():
+    valid = json.dumps({"blocks": [{"type": "text", "text": 'He said "stop".'}]})
+    assert vision_ocr._repair_unescaped_quotes(valid) == valid
+    json.loads(vision_ocr._repair_unescaped_quotes(valid))  # still parses
+
+
+def test_extract_page_with_vision_error_shows_context_near_the_actual_failure(monkeypatch):
+    # The old error message only ever showed the first 300 characters of
+    # the response - useless when (as in the bug report this fixes) the
+    # actual mistake is hundreds of characters in, deep into transcribed
+    # page text. The error should instead show text *around* where the
+    # parser actually gave up.
+    padding = "x" * 500
+    broken = '{"blocks": [{"type": "text", "text": "' + padding + '", "bbox": [0.1, 0.1, "not-a-comma-here" 0.5, 0.2]}]}'
+    monkeypatch.setattr(
+        vision_ocr, "Anthropic",
+        lambda api_key=None: _FakeAnthropic(broken),
+    )
+    try:
+        vision_ocr.extract_page_with_vision(_tiny_png_bytes(), api_key="fake")
+        assert False, "expected ValueError"
+    except ValueError as e:
+        assert "not-a-comma-here" in str(e)
+        # the whole 500-char padding block shouldn't need to be dumped just
+        # to show the part that's actually relevant
+        assert len(str(e)) < len(broken)
+
+
 class _FakeLogprobItem:
     def __init__(self, token, logprob):
         self.token = token
