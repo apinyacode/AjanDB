@@ -45,7 +45,7 @@ import threading
 import time
 import uuid
 
-from . import categorize, convert, db, sources, spellcheck
+from . import categorize, convert, db, originals, sources, spellcheck
 
 _sessions: dict[str, dict] = {}
 _lock = threading.Lock()
@@ -392,6 +392,7 @@ def start(pdf_path: str, filename: str, engine: str = "classical", provider: str
         _sessions[session_id] = session
 
     sources.save(pdf_path, filename, total_pages, _resume_settings(session, next_index=0))
+    originals.save(pdf_path, filename, total_pages)
 
     return {"session_id": session_id, "total_pages": total_pages, "page": page, "log": session["log"]}
 

@@ -6,6 +6,7 @@ data/*.sqlite3
 data/images/
 data/audio/
 data/sources/
+data/originals/
 .env
 cloudflared
 *.log

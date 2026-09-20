@@ -19,11 +19,14 @@ searchable markdown, and compiling a book from whatever matches a topic.
   [`../CONTEXT.md`](../CONTEXT.md)'s "Multi-signal 'likely wrong' flagging" and "Thai
   spell-check".
 - **Data Search** — full-text search (SQLite FTS5) plus a book browser with per-book
-  `.md` export, delete, a manual "ready for publish" flag, and (for a page-by-page review
-  that was cancelled or abandoned partway through) a **Resume conversion** button that picks
-  up right where it left off — see [`../CONTEXT.md`](../CONTEXT.md)'s "Managing stored
-  books". Resuming needs the original PDF to still be around: it's now kept until that
-  review finishes, unlike everywhere else in this app, which never retains the source file.
+  `.md` export, delete, a manual "ready for publish" flag, free-form **labels** (publish
+  date, media type, content, author/publisher, or any custom key you add), **View/Export
+  original** to get back the exact file a book was uploaded from, and (for a page-by-page
+  review that was cancelled or abandoned partway through) a **Resume conversion** button that
+  picks up right where it left off — see [`../CONTEXT.md`](../CONTEXT.md)'s "Managing stored
+  books". Every book's original upload is now kept permanently for export, and a
+  still-in-progress review also keeps a temporary copy so it can resume — unlike bulk
+  uploads' converted markdown, which is all this app used to retain.
 - **Data Generation** — synthesises a new markdown book from stored content matching a
   topic, via Claude or GPT.
 - **`scripts/chunked_upload.py`** — ingests a large book outside the browser, with resume

@@ -735,12 +735,34 @@ function renderBookCard(book) {
     `<div class="row">` +
     `<button class="ghost view-book-btn" type="button">View pages</button>` +
     `<a class="ghost" href="/api/books/${book.id}/export" download>Export .md</a>` +
+    (book.has_original
+      ? `<a class="ghost" href="/api/books/${book.id}/original" target="_blank">View original</a>` +
+        `<a class="ghost" href="/api/books/${book.id}/original/export" download>Export original</a>`
+      : "") +
     (book.resumable
       ? `<button class="ghost resume-book-btn" type="button">▶ Resume conversion</button>` : "") +
     `<button class="${book.ready_for_publish ? "" : "ghost"} publish-toggle-btn" type="button">` +
     (book.ready_for_publish ? "✓ Ready for publish" : "☆ Mark ready for publish") +
     `</button>` +
     `<button class="danger delete-book-btn" type="button">Delete</button>` +
+    `</div>` +
+    `<div class="label-row">` +
+    `<span class="label-chips">${renderLabelChips(book.labels)}</span>` +
+    `<button class="ghost add-label-btn" type="button">+ Add label</button>` +
+    `</div>` +
+    `<div class="label-form hidden">` +
+    `<select class="label-key-select">` +
+    `<option value="publish date">Publish date</option>` +
+    `<option value="media type">Media type</option>` +
+    `<option value="content">Content</option>` +
+    `<option value="author name or publisher name">Author/publisher name</option>` +
+    `<option value="__custom__">+ New label...</option>` +
+    `</select>` +
+    `<input class="label-custom-key hidden" type="text" placeholder="Label name">` +
+    `<select class="label-value-select hidden"></select>` +
+    `<input class="label-value-text" type="text" placeholder="Value">` +
+    `<button class="label-save-btn" type="button">Save</button>` +
+    `<button class="ghost label-cancel-btn" type="button">Cancel</button>` +
     `</div>` +
     `<p class="status book-card-status"></p>` +
     `<div class="book-chunks hidden"></div>`;
@@ -822,7 +844,110 @@ function renderBookCard(book) {
     });
   }
 
+  wireLabelControls(card, book, statusEl);
+
   return card;
+}
+
+const LABEL_VALUE_OPTIONS = {
+  "media type": ["book", "audio", "video", "notes"],
+  "content": ["dhamma talk", "QnA", "book by monk"],
+};
+
+function renderLabelChips(labels) {
+  return Object.entries(labels || {}).map(([key, value]) =>
+    `<span class="label-chip">${escapeHtml(key)}: ${escapeHtml(value)} ` +
+    `<button class="label-remove-btn" type="button" data-key="${escapeHtml(key)}" ` +
+    `aria-label="Remove ${escapeHtml(key)} label">&times;</button></span>`
+  ).join("");
+}
+
+function wireLabelControls(card, book, statusEl) {
+  const chipsEl = card.querySelector(".label-chips");
+  const addBtn = card.querySelector(".add-label-btn");
+  const formEl = card.querySelector(".label-form");
+  const keySelect = card.querySelector(".label-key-select");
+  const customKeyInput = card.querySelector(".label-custom-key");
+  const valueSelect = card.querySelector(".label-value-select");
+  const valueText = card.querySelector(".label-value-text");
+  const saveBtn = card.querySelector(".label-save-btn");
+  const cancelBtn = card.querySelector(".label-cancel-btn");
+
+  function resetForm() {
+    keySelect.value = "publish date";
+    customKeyInput.value = "";
+    valueText.value = "";
+    syncValueInput();
+  }
+
+  function syncValueInput() {
+    const key = keySelect.value;
+    customKeyInput.classList.toggle("hidden", key !== "__custom__");
+    const options = LABEL_VALUE_OPTIONS[key];
+    if (options) {
+      valueSelect.innerHTML = options.map(o => `<option value="${escapeHtml(o)}">${escapeHtml(o)}</option>`).join("");
+      valueSelect.classList.remove("hidden");
+      valueText.classList.add("hidden");
+    } else {
+      valueSelect.classList.add("hidden");
+      valueText.classList.remove("hidden");
+      valueText.placeholder = key === "publish date" ? "dd:mm:yyyy" : "Value";
+    }
+  }
+
+  keySelect.addEventListener("change", syncValueInput);
+  syncValueInput();
+
+  addBtn.addEventListener("click", () => {
+    formEl.classList.toggle("hidden");
+    if (!formEl.classList.contains("hidden")) resetForm();
+  });
+
+  cancelBtn.addEventListener("click", () => {
+    formEl.classList.add("hidden");
+  });
+
+  saveBtn.addEventListener("click", async () => {
+    const key = (keySelect.value === "__custom__" ? customKeyInput.value : keySelect.value).trim();
+    const value = LABEL_VALUE_OPTIONS[keySelect.value] ? valueSelect.value : valueText.value.trim();
+    if (!key) {
+      statusEl.textContent = "Error: label name can't be empty";
+      return;
+    }
+    saveBtn.disabled = true;
+    try {
+      const res = await fetch(`/api/books/${book.id}/labels`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ key, value }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Failed to save label");
+      book.labels = data.labels;
+      chipsEl.innerHTML = renderLabelChips(book.labels);
+      formEl.classList.add("hidden");
+    } catch (err) {
+      statusEl.textContent = `Error: ${err.message}`;
+    } finally {
+      saveBtn.disabled = false;
+    }
+  });
+
+  chipsEl.addEventListener("click", async (e) => {
+    const btn = e.target.closest(".label-remove-btn");
+    if (!btn) return;
+    const key = btn.dataset.key;
+    btn.disabled = true;
+    try {
+      const res = await fetch(`/api/books/${book.id}/labels/${encodeURIComponent(key)}`, { method: "DELETE" });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Failed to remove label");
+      book.labels = data.labels;
+      chipsEl.innerHTML = renderLabelChips(book.labels);
+    } catch (err) {
+      statusEl.textContent = `Error: ${err.message}`;
+    }
+  });
 }
 
 document.getElementById("refresh-books-btn").addEventListener("click", loadBooks);

@@ -73,12 +73,14 @@ for the frontend's live console.
 **Storage** (`webapp/backend/db.py`) — SQLite + FTS5. `list_books()` / `get_book_chunks()`
 group chunks by `(source_filename, total_pages)` and dedupe re-uploaded pages via a
 `_LATEST_PER_PAGE_CTE` (most-recent row per page wins) — re-uploading doesn't delete the
-old row, it just becomes an unused extra one that browsing/export ignore. A separate
-`book_flags` table (keyed the same way) holds the one per-book flag that doesn't fit the
-per-chunk row model: `ready_for_publish` (see "Managing stored books" below). `delete_book()`
-removes every row (including stray superseded duplicates) for a book, plus its flag row - it
-never touches `data/images/` or `data/sources/`, since an image can be shared by content hash
-with another book and a resumable source is cleaned up by review.py's own lifecycle.
+old row, it just becomes an unused extra one that browsing/export ignore. Two separate tables, both keyed the same way, hold per-book state that doesn't fit the
+per-chunk row model: `book_flags` (`ready_for_publish`) and `book_labels` (arbitrary
+`label_key`/`label_value` pairs, composite-PK'd on key too - see "Managing stored books"
+below for both). `delete_book()` removes every row (including stray superseded duplicates) for
+a book, plus its `book_flags`/`book_labels` rows - it never touches `data/images/`,
+`data/sources/`, or `data/originals/`, since an image can be shared by content hash with
+another book and the other two are cleaned up by main.py's `delete_book` endpoint calling
+`sources.delete()`/`originals.delete()` itself once this returns.
 
 **Resumable sources** (`webapp/backend/sources.py`) — every page-by-page review session
 (`review.start()`) keeps a durable copy of its original PDF plus its settings (engine,
@@ -90,6 +92,20 @@ long before conversion finishes, and continuing later needs the file back). Dele
 `review._advance()` reaches the last page naturally (nothing left to resume); kept
 indefinitely otherwise, same "no automatic cleanup" tradeoff already accepted for
 `data/images/`.
+
+**Retained originals** (`webapp/backend/originals.py`) — separate from and complementary to
+`sources.py` above: every book (bulk upload or review, complete or incomplete) gets a
+permanent copy of the exact file it was uploaded from, under
+`webapp/data/originals/<hash-of-filename-and-total_pages><real-extension>`, so "View
+original"/"Export original" always have something to serve. Deliberately its own module
+rather than folded into `sources.py`, since the two lifecycles are genuinely different:
+`sources.py` exists only so an *incomplete* review can resume and deletes itself the moment
+that session finishes, while this exists for every book indefinitely and is only deleted when
+the book itself is. `save()` is called once from both `main.py`'s bulk-upload job (right after
+conversion succeeds, before the temp upload file is unlinked) and `review.start()` (alongside
+`sources.save()`), and is a no-op if a copy already exists for that `(source_filename,
+total_pages)` - handles both a multi-batch upload and a plain re-upload calling it more than
+once. `scripts/chunked_upload.py` never calls it (see "Managing stored books" below).
 
 **Text-to-speech** (`webapp/backend/tts.py`) — `get_or_synthesize(text)` fetches an Azure
 Speech access token, POSTs SSML to Azure's TTS REST endpoint, and caches the returned MP3
@@ -229,8 +245,9 @@ features" below) because highlighting large or near-whole-page spans wasn't a us
   "current page" to resolve a relative link against).
 - **Managing stored books** (Data Search tab, each book card) —
   - **Delete** (`DELETE /api/books/{id}`) removes every stored page of a book after a
-    confirm() prompt (destructive, no undo) - leaves `data/images/`/`data/sources/` alone
-    (see db.delete_book()'s docstring for why).
+    confirm() prompt (destructive, no undo), plus its `book_flags`/`book_labels` rows and its
+    `data/sources/`/`data/originals/` copies if any - leaves `data/images/` alone (see
+    db.delete_book()'s docstring for why).
   - **Ready for publish** (`POST /api/books/{id}/ready-for-publish`) is a manual,
     purely-organisational toggle for the person curating the library - nothing here actually
     publishes anything anywhere. Backed by the `book_flags` table.
@@ -242,6 +259,23 @@ features" below) because highlighting large or near-whole-page spans wasn't a us
     the API key (never persisted, same rule every browser-supplied key in this app follows) -
     resuming a vision-engine session needs one supplied again, unless the backend's own
     environment already has one configured.
+  - **View original / Export original** appear only on a book with `has_original: true` (see
+    `webapp/backend/originals.py`) - the exact file this book was uploaded from, viewed inline
+    (`GET /api/books/{id}/original`) or downloaded (`GET /api/books/{id}/original/export`).
+    Unlike `sources.py`, this copy is kept permanently for every book regardless of source
+    (bulk upload or review) or whether conversion ever finished, since its purpose is "get back
+    what you gave this app," not "resume where I left off." `scripts/chunked_upload.py` never
+    populates it (that path works on a local file outside the webapp's HTTP endpoints
+    entirely), so books ingested that way never show these buttons.
+  - **Labels** — free-form key/value tags on a book (`book_labels` table; `PUT
+    /api/books/{id}/labels`, `DELETE /api/books/{id}/labels/{key}`), shown as chips with a
+    per-label remove button. The "+ Add label" form suggests four common keys - publish date
+    (free text, "dd:mm:yyyy" placeholder), media type (dropdown: book/audio/video/notes),
+    content (dropdown: dhamma talk/QnA/book by monk), author/publisher name (free text) - plus
+    a "+ New label..." option for any custom key. Nothing in the backend enforces that key
+    list; it's purely a frontend suggestion; `db.list_books()` embeds each book's full labels
+    dict via one extra query grouped in Python (avoiding both an N+1 per-book lookup and a
+    dependency on SQLite's JSON1 functions for portability).
 - **Data Generation** — keyword-searches stored chunks and asks Claude/GPT to synthesise a
   coherent book from the matches; strips embedded image markdown down to a `[label]`
   placeholder before sending anything to an LLM.
@@ -287,7 +321,7 @@ correct from passing tests alone.
 
 ## Current state
 
-**228 tests pass** (44 in `pdf_to_docx_pipeline`, 184 in `webapp`), covering: the SQLite/FTS5
+**259 tests pass** (44 in `pdf_to_docx_pipeline`, 215 in `webapp`), covering: the SQLite/FTS5
 layer and duplicate-page dedup, per-page/per-character-budget chunking and image handling,
 category suggestion with graceful no-key fallback, the book compiler's retrieval and error
 handling for both providers, the review session state machine (including recovery from a
@@ -296,10 +330,13 @@ TTS (voice selection, caching, the token-fetch + synthesize call chain, the `/ap
 `/audio/{filename}` endpoints — all against a mocked Azure client, no billed calls in CI),
 the multi-signal flagging union (each of the four signals firing/not-firing independently,
 gated correctly by engine/provider, and deduped when they overlap), `sources.py`'s durable
-PDF+settings storage, and delete/ready-for-publish/resume (including a resumed session
-picking up the original engine/provider/category, and the source being cleaned up once a
-review finishes naturally but kept after a cancel), and the FastAPI endpoints via
-`TestClient`.
+PDF+settings storage, `originals.py`'s permanent per-book file storage (roundtrip, no-op
+re-save, extension preservation, per-book independence), the `book_labels` CRUD functions and
+their embedding into `list_books()`, delete/ready-for-publish/resume/labels/view-and-export-
+original endpoints (including a resumed session picking up the original engine/provider/
+category, the source being cleaned up once a review finishes naturally but kept after a
+cancel, and deleting a book cleaning up its flags/labels/sources/originals together), and the
+FastAPI endpoints via `TestClient`.
 
 **Shipped, in build order:** upload/search/chat webapp → per-page chunking with OCR
 confidence → async uploads → page-by-page review mode → live progress console → book
@@ -313,7 +350,11 @@ multi-signal highlighting (a real usability complaint - it painted too much of t
 mean anything), replaced the static Thai-typo summary line with click-to-correct inline
 suggestions → **book management**: delete, ready-for-publish, and resume-conversion per book
 in the Data Search tab (the last of which needed the first real durable storage of an
-original upload - see `sources.py` above).
+original upload - see `sources.py` above) → **view/export original + labels**: permanent
+per-book retention of the original uploaded file (`originals.py`, a separate module from
+`sources.py` since the retention lifecycles genuinely differ) plus a free-form key/value
+label system (`book_labels` table) for organising the library beyond category/ready-for-
+publish.
 
 **Known limitations:**
 
@@ -332,6 +373,21 @@ original upload - see `sources.py` above).
   session that's simply abandoned (browser closed, never resumed, book never deleted either)
   leaves its source file there indefinitely. Same "no garbage collection" tradeoff already
   accepted for `data/images/`.
+- **`data/originals/` retains the original file for every book, indefinitely, by design** -
+  unlike `data/sources/` and `data/images/`, this isn't a cache with an eviction gap, it's
+  meant to be permanent (that's the whole point of "Export original"), and is only ever
+  deleted alongside the book itself. Worth knowing as a real disk-usage tradeoff for a large
+  library of big source PDFs, not something needing a fix.
+- **Books ingested via `scripts/chunked_upload.py` never get a retained original or "View/
+  Export original" buttons** - that script works directly on a local file path outside the
+  webapp's HTTP endpoints entirely, so there's no upload request for `originals.py` to hook
+  into. A reasonable, explicit scope limit rather than an oversight: anyone using that script
+  already has the source file on disk.
+- **Label keys aren't validated or deduplicated case-insensitively** - "Media Type" and
+  "media type" would be stored as two separate keys, since `book_labels` treats the key as an
+  opaque string and the frontend's four suggested keys are just pre-filled `<option>`s, not an
+  enforced enum. Fine for a single-person library; would need normalising if labels were ever
+  aggregated/filtered across many contributors.
 - **Vision-LLM confidence is the model's own self-reported estimate — explicitly *not*
   calibrated**, unlike Tesseract's real per-character score (well-calibrated as a *relative*
   ranking, not independently verified accuracy either). This is why flagging no longer relies

@@ -75,6 +75,14 @@ def init_db(conn: sqlite3.Connection):
             ready_for_publish INTEGER NOT NULL DEFAULT 0,
             PRIMARY KEY (source_filename, total_pages)
         );
+
+        CREATE TABLE IF NOT EXISTS book_labels (
+            source_filename TEXT NOT NULL,
+            total_pages INTEGER NOT NULL,
+            label_key TEXT NOT NULL,
+            label_value TEXT NOT NULL,
+            PRIMARY KEY (source_filename, total_pages, label_key)
+        );
         """
     )
     conn.commit()
@@ -169,7 +177,14 @@ def list_books(conn: sqlite3.Connection) -> list[dict]:
 
     `ready_for_publish` comes from the separate book_flags table (see
     set_ready_for_publish()) keyed the same way, defaulting to 0/false for
-    a book that's never had the flag touched."""
+    a book that's never had the flag touched.
+
+    `labels` is a {key: value} dict from the separate book_labels table
+    (see set_book_label()), keyed the same way, defaulting to {} for a book
+    with none set. Fetched as one extra query covering every book here
+    rather than joined into the main query or looked up per book, since
+    SQLite has no portable tuple-IN and a personal knowledge base's label
+    table is small enough that grouping in Python is simpler than either."""
     rows = conn.execute(
         _LATEST_PER_PAGE_CTE
         + """
@@ -190,7 +205,18 @@ def list_books(conn: sqlite3.Connection) -> list[dict]:
         ORDER BY last_uploaded_at DESC
         """
     ).fetchall()
-    return [dict(r) for r in rows]
+    books = [dict(r) for r in rows]
+
+    labels_by_book: dict[tuple[str, int], dict[str, str]] = {}
+    for r in conn.execute(
+        "SELECT source_filename, total_pages, label_key, label_value FROM book_labels"
+    ).fetchall():
+        labels_by_book.setdefault((r["source_filename"], r["total_pages"]), {})[
+            r["label_key"]] = r["label_value"]
+    for book in books:
+        book["labels"] = labels_by_book.get((book["source_filename"], book["total_pages"]), {})
+
+    return books
 
 
 def get_book_identity(conn: sqlite3.Connection, book_id: int) -> tuple[str, int] | None:
@@ -219,15 +245,52 @@ def set_ready_for_publish(conn: sqlite3.Connection, source_filename: str,
     conn.commit()
 
 
+def set_book_label(conn: sqlite3.Connection, source_filename: str, total_pages: int,
+                    key: str, value: str) -> None:
+    """Sets (or overwrites) one label on a book. There's no fixed set of
+    keys - the frontend suggests a few common ones (publish date, media
+    type, content, author/publisher) but any key is accepted, since the
+    whole point is letting a user tag a book however they find useful."""
+    conn.execute(
+        """
+        INSERT INTO book_labels (source_filename, total_pages, label_key, label_value)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT (source_filename, total_pages, label_key)
+        DO UPDATE SET label_value = excluded.label_value
+        """,
+        (source_filename, total_pages, key, value),
+    )
+    conn.commit()
+
+
+def delete_book_label(conn: sqlite3.Connection, source_filename: str, total_pages: int,
+                       key: str) -> None:
+    conn.execute(
+        "DELETE FROM book_labels WHERE source_filename = ? AND total_pages = ? AND label_key = ?",
+        (source_filename, total_pages, key),
+    )
+    conn.commit()
+
+
+def get_book_labels(conn: sqlite3.Connection, source_filename: str, total_pages: int) -> dict[str, str]:
+    rows = conn.execute(
+        "SELECT label_key, label_value FROM book_labels WHERE source_filename = ? AND total_pages = ?",
+        (source_filename, total_pages),
+    ).fetchall()
+    return {r["label_key"]: r["label_value"] for r in rows}
+
+
 def delete_book(conn: sqlite3.Connection, book_id: int) -> int:
     """Deletes every chunk (all rows, not just the latest-per-page ones -
     including any stray duplicate rows from a re-upload, see
     _LATEST_PER_PAGE_CTE's comment) belonging to the book `book_id`
-    identifies, plus its book_flags row if any. Returns how many document
-    rows were deleted (0 if book_id didn't match anything). Does not touch
-    data/images/ or data/sources/ - images may be shared by content hash
-    with another book, and a resumable source is cleaned up by review.py's
-    own lifecycle, not by this."""
+    identifies, plus its book_flags and book_labels rows if any. Returns
+    how many document rows were deleted (0 if book_id didn't match
+    anything). Does not touch data/images/, data/sources/, or
+    data/originals/ - images may be shared by content hash with another
+    book, and the other two have their own lifecycles (see main.py's
+    delete_book endpoint, which calls sources.delete()/originals.delete()
+    itself once this returns)."""
     identity = get_book_identity(conn, book_id)
     if not identity:
         return 0
@@ -238,6 +301,10 @@ def delete_book(conn: sqlite3.Connection, book_id: int) -> int:
     )
     conn.execute(
         "DELETE FROM book_flags WHERE source_filename = ? AND total_pages = ?",
+        (source_filename, total_pages),
+    )
+    conn.execute(
+        "DELETE FROM book_labels WHERE source_filename = ? AND total_pages = ?",
         (source_filename, total_pages),
     )
     conn.commit()

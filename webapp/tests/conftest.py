@@ -5,7 +5,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import pytest
 
-from backend import convert, sources, tts
+from backend import convert, originals, sources, tts
 
 
 @pytest.fixture(autouse=True)
@@ -31,6 +31,14 @@ def _isolate_sources_dir(tmp_path, monkeypatch):
     """Same reasoning as _isolate_images_dir, for sources.py's durable
     per-review-session PDF copies under webapp/data/sources/."""
     monkeypatch.setattr(sources, "SOURCES_DIR", str(tmp_path / "sources"))
+
+
+@pytest.fixture(autouse=True)
+def _isolate_originals_dir(tmp_path, monkeypatch):
+    """Same reasoning as _isolate_images_dir, for originals.py's permanent
+    per-book copies of the original uploaded file under
+    webapp/data/originals/."""
+    monkeypatch.setattr(originals, "ORIGINALS_DIR", str(tmp_path / "originals"))
 
 
 @pytest.fixture(autouse=True)

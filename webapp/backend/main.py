@@ -6,6 +6,7 @@ book from whatever matches a topic.
 Run with:
     uvicorn backend.main:app --reload --app-dir webapp
 """
+import mimetypes
 import os
 import re
 import shutil
@@ -20,7 +21,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import book_compiler, categorize, convert, db, review, sources, tts
+from . import book_compiler, categorize, convert, db, originals, review, sources, tts
 
 app = FastAPI(title="AjanDB")
 
@@ -117,6 +118,7 @@ def _run_upload_job(job_id: str, tmp_path: str, filename: str, ext: str,
         chunks = convert.convert_to_markdown(
             tmp_path, filename, engine=engine, provider=provider, model=model,
             api_key=vision_key, progress=_progress)
+        originals.save(tmp_path, filename, len(chunks))
     except ValueError as e:
         _upload_log(job_id, f"ERROR: {e}")
         _set_job(job_id, status="error", code=400, detail=str(e))
@@ -400,8 +402,12 @@ def list_books():
     db.list_books()'s docstring for how "one book" is identified. Each
     entry is annotated with `resumable` - whether a page-by-page review of
     this exact book was cancelled or abandoned partway through and can be
-    continued (see sources.py) - on top of whatever db.list_books() itself
-    returns (pages_stored/total_pages, ready_for_publish, ...)."""
+    continued (see sources.py) - and `has_original` - whether the original
+    uploaded file was retained and can be viewed/exported (see
+    originals.py; false for books ingested via scripts/chunked_upload.py,
+    which never goes through this app's upload endpoints) - on top of
+    whatever db.list_books() itself returns (pages_stored/total_pages,
+    ready_for_publish, ...)."""
     conn = db.get_connection()
     try:
         books = db.list_books(conn)
@@ -409,6 +415,7 @@ def list_books():
         conn.close()
     for book in books:
         book["resumable"] = sources.exists(book["source_filename"], book["total_pages"])
+        book["has_original"] = originals.exists(book["source_filename"], book["total_pages"])
     return books
 
 
@@ -436,9 +443,9 @@ def delete_book(book_id: int):
     """Deletes every stored page of this book - see db.delete_book()'s
     docstring for exactly what is and isn't touched there (images are left
     alone, since one can be shared by content hash with another book). Any
-    resumable source for this exact book (see sources.py) is also cleaned
-    up here, since there's nothing left to resume once the book itself is
-    gone."""
+    resumable source (sources.py) and retained original file (originals.py)
+    for this exact book are also cleaned up here, since there's nothing
+    left to resume or export once the book itself is gone."""
     conn = db.get_connection()
     try:
         identity = db.get_book_identity(conn, book_id)
@@ -449,6 +456,7 @@ def delete_book(book_id: int):
         raise HTTPException(404, "Book not found")
     if identity:
         sources.delete(identity[0], identity[1])
+        originals.delete(identity[0], identity[1])
     return {"deleted_pages": deleted}
 
 
@@ -470,6 +478,47 @@ def set_book_ready_for_publish(book_id: int, req: ReadyForPublishRequest):
     finally:
         conn.close()
     return {"ready_for_publish": req.ready}
+
+
+class SetBookLabelRequest(BaseModel):
+    key: str
+    value: str
+
+
+@app.put("/api/books/{book_id}/labels")
+def set_book_label(book_id: int, req: SetBookLabelRequest):
+    """Sets (or overwrites) one free-form key/value label on a book - see
+    db.set_book_label()'s docstring for why there's no fixed key list
+    enforced here; the frontend suggests common ones (publish date, media
+    type, content, author/publisher) plus a custom-key option, but any
+    non-empty key is accepted."""
+    key = req.key.strip()
+    if not key:
+        raise HTTPException(400, "Label key cannot be empty")
+    conn = db.get_connection()
+    try:
+        identity = db.get_book_identity(conn, book_id)
+        if not identity:
+            raise HTTPException(404, "Book not found")
+        db.set_book_label(conn, identity[0], identity[1], key, req.value)
+        labels = db.get_book_labels(conn, identity[0], identity[1])
+    finally:
+        conn.close()
+    return {"labels": labels}
+
+
+@app.delete("/api/books/{book_id}/labels/{key}")
+def delete_book_label(book_id: int, key: str):
+    conn = db.get_connection()
+    try:
+        identity = db.get_book_identity(conn, book_id)
+        if not identity:
+            raise HTTPException(404, "Book not found")
+        db.delete_book_label(conn, identity[0], identity[1], key)
+        labels = db.get_book_labels(conn, identity[0], identity[1])
+    finally:
+        conn.close()
+    return {"labels": labels}
 
 
 class ResumeReviewRequest(BaseModel):
@@ -524,13 +573,13 @@ def _export_filename(source_filename: str) -> str:
     return f"{base}.md"
 
 
-def _content_disposition(filename: str) -> str:
+def _content_disposition(filename: str, disposition: str = "attachment") -> str:
     # A non-ASCII filename (very possible here - e.g. a Thai book title)
     # can't go in the plain `filename=` parameter, so it's UTF-8
     # percent-encoded per RFC 5987 in `filename*=`, with an ASCII-only
     # fallback in `filename=` for anything that doesn't support that.
     ascii_fallback = re.sub(r'[^\x20-\x7E]', "_", filename).replace('"', "'") or "export.md"
-    return f"attachment; filename=\"{ascii_fallback}\"; filename*=UTF-8''{quote(filename)}"
+    return f"{disposition}; filename=\"{ascii_fallback}\"; filename*=UTF-8''{quote(filename)}"
 
 
 _IMAGE_LINK_RE = re.compile(r"(!\[[^\]]*\]\()(/images/[^)]+)(\))")
@@ -569,6 +618,41 @@ def export_book(book_id: int, request: Request):
         content=markdown, media_type="text/markdown",
         headers={"Content-Disposition": _content_disposition(filename)},
     )
+
+
+def _serve_original(book_id: int, disposition: str) -> FileResponse:
+    conn = db.get_connection()
+    try:
+        identity = db.get_book_identity(conn, book_id)
+    finally:
+        conn.close()
+    if identity is None:
+        raise HTTPException(404, "Book not found")
+    source_filename, total_pages = identity
+    path = originals.load(source_filename, total_pages)
+    if path is None:
+        raise HTTPException(404, "No original file was retained for this book")
+    media_type = mimetypes.guess_type(source_filename)[0] or "application/octet-stream"
+    return FileResponse(
+        path, media_type=media_type,
+        headers={"Content-Disposition": _content_disposition(source_filename, disposition)},
+    )
+
+
+@app.get("/api/books/{book_id}/original")
+def view_book_original(book_id: int):
+    """Streams the original uploaded file for inline viewing (e.g. a PDF
+    opened in the browser's own viewer) rather than a forced download -
+    see export_book_original for the download variant, and originals.py
+    for what is and isn't retained."""
+    return _serve_original(book_id, "inline")
+
+
+@app.get("/api/books/{book_id}/original/export")
+def export_book_original(book_id: int):
+    """Downloads the exact original file this book was uploaded from, if
+    one was retained - see originals.py."""
+    return _serve_original(book_id, "attachment")
 
 
 @app.get("/api/search")

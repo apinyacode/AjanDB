@@ -2,7 +2,7 @@ import time
 
 from fastapi.testclient import TestClient
 
-from backend import db, main as main_module, sources
+from backend import db, main as main_module, originals, sources
 
 
 def _client(tmp_path, monkeypatch):
@@ -682,6 +682,101 @@ def test_delete_book_also_cleans_up_its_resumable_source(tmp_path, monkeypatch):
     assert not sources.exists("book.pdf", 3)
 
 
+def test_delete_book_also_cleans_up_its_retained_original(tmp_path, monkeypatch):
+    client = _client(tmp_path, monkeypatch)
+    _upload_and_wait(
+        client,
+        files={"file": ("book.pdf", _sample_pdf_bytes(), "application/pdf")},
+        data={"langs": "eng+tha"},
+    )
+    book_id = client.get("/api/books").json()[0]["id"]
+    assert originals.exists("book.pdf", 3)
+
+    resp = client.delete(f"/api/books/{book_id}")
+
+    assert resp.status_code == 200, resp.text
+    assert not originals.exists("book.pdf", 3)
+
+
+# --- Viewing/exporting the original file (GET /api/books/{book_id}/original[/export]) ---
+
+def test_list_books_marks_bulk_uploads_as_having_an_original(tmp_path, monkeypatch):
+    client = _client(tmp_path, monkeypatch)
+    _upload_and_wait(
+        client,
+        files={"file": ("book.pdf", _sample_pdf_bytes(), "application/pdf")},
+        data={"langs": "eng+tha"},
+    )
+    assert client.get("/api/books").json()[0]["has_original"] is True
+
+
+def test_list_books_marks_a_review_session_as_having_an_original(tmp_path, monkeypatch):
+    client = _client(tmp_path, monkeypatch)
+    started = _start_review(client).json()
+    client.post(f"/api/review/{started['session_id']}/approve", json={})
+    client.post(f"/api/review/{started['session_id']}/cancel")
+
+    assert client.get("/api/books").json()[0]["has_original"] is True
+
+
+def test_view_original_returns_the_uploaded_pdf_bytes_inline(tmp_path, monkeypatch):
+    client = _client(tmp_path, monkeypatch)
+    pdf_bytes = _sample_pdf_bytes()
+    _upload_and_wait(
+        client, files={"file": ("book.pdf", pdf_bytes, "application/pdf")},
+        data={"langs": "eng+tha"},
+    )
+    book_id = client.get("/api/books").json()[0]["id"]
+
+    resp = client.get(f"/api/books/{book_id}/original")
+    assert resp.status_code == 200, resp.text
+    assert resp.content == pdf_bytes
+    assert resp.headers["content-disposition"].startswith("inline;")
+    assert 'filename="book.pdf"' in resp.headers["content-disposition"]
+
+
+def test_export_original_returns_the_uploaded_pdf_as_a_download(tmp_path, monkeypatch):
+    client = _client(tmp_path, monkeypatch)
+    pdf_bytes = _sample_pdf_bytes()
+    _upload_and_wait(
+        client, files={"file": ("book.pdf", pdf_bytes, "application/pdf")},
+        data={"langs": "eng+tha"},
+    )
+    book_id = client.get("/api/books").json()[0]["id"]
+
+    resp = client.get(f"/api/books/{book_id}/original/export")
+    assert resp.status_code == 200, resp.text
+    assert resp.content == pdf_bytes
+    assert resp.headers["content-disposition"].startswith("attachment;")
+
+
+def test_view_original_returns_404_for_unknown_book(tmp_path, monkeypatch):
+    client = _client(tmp_path, monkeypatch)
+    assert client.get("/api/books/999/original").status_code == 404
+
+
+def test_export_original_returns_404_for_unknown_book(tmp_path, monkeypatch):
+    client = _client(tmp_path, monkeypatch)
+    assert client.get("/api/books/999/original/export").status_code == 404
+
+
+def test_view_original_returns_404_when_nothing_was_retained(tmp_path, monkeypatch):
+    # a book whose retained original was deleted out from under it (or one
+    # that predates originals.py entirely) has a real book_id but no file.
+    client = _client(tmp_path, monkeypatch)
+    _upload_and_wait(
+        client,
+        files={"file": ("book.pdf", _sample_pdf_bytes(), "application/pdf")},
+        data={"langs": "eng+tha"},
+    )
+    book_id = client.get("/api/books").json()[0]["id"]
+    originals.delete("book.pdf", 3)
+
+    resp = client.get(f"/api/books/{book_id}/original")
+    assert resp.status_code == 404
+    assert "No original file was retained" in resp.json()["detail"]
+
+
 # --- Ready-for-publish flag (POST /api/books/{book_id}/ready-for-publish) ---
 
 def test_ready_for_publish_defaults_false_then_can_be_set_and_cleared(tmp_path, monkeypatch):
@@ -707,6 +802,99 @@ def test_ready_for_publish_returns_404_for_unknown_id(tmp_path, monkeypatch):
     client = _client(tmp_path, monkeypatch)
     resp = client.post("/api/books/999/ready-for-publish", json={"ready": True})
     assert resp.status_code == 404
+
+
+# --- Labels (PUT/DELETE /api/books/{book_id}/labels) ---
+
+def test_set_book_label_adds_and_lists_it(tmp_path, monkeypatch):
+    client = _client(tmp_path, monkeypatch)
+    _upload_and_wait(
+        client,
+        files={"file": ("book.pdf", _sample_pdf_bytes(), "application/pdf")},
+        data={"langs": "eng+tha"},
+    )
+    book_id = client.get("/api/books").json()[0]["id"]
+
+    resp = client.put(f"/api/books/{book_id}/labels", json={"key": "media type", "value": "book"})
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == {"labels": {"media type": "book"}}
+    assert client.get("/api/books").json()[0]["labels"] == {"media type": "book"}
+
+
+def test_set_book_label_overwrites_an_existing_key(tmp_path, monkeypatch):
+    client = _client(tmp_path, monkeypatch)
+    _upload_and_wait(
+        client,
+        files={"file": ("book.pdf", _sample_pdf_bytes(), "application/pdf")},
+        data={"langs": "eng+tha"},
+    )
+    book_id = client.get("/api/books").json()[0]["id"]
+    client.put(f"/api/books/{book_id}/labels", json={"key": "media type", "value": "book"})
+
+    resp = client.put(f"/api/books/{book_id}/labels", json={"key": "media type", "value": "audio"})
+    assert resp.json() == {"labels": {"media type": "audio"}}
+
+
+def test_set_book_label_rejects_an_empty_key(tmp_path, monkeypatch):
+    client = _client(tmp_path, monkeypatch)
+    _upload_and_wait(
+        client,
+        files={"file": ("book.pdf", _sample_pdf_bytes(), "application/pdf")},
+        data={"langs": "eng+tha"},
+    )
+    book_id = client.get("/api/books").json()[0]["id"]
+
+    resp = client.put(f"/api/books/{book_id}/labels", json={"key": "   ", "value": "book"})
+    assert resp.status_code == 400
+
+
+def test_set_book_label_returns_404_for_unknown_book(tmp_path, monkeypatch):
+    client = _client(tmp_path, monkeypatch)
+    resp = client.put("/api/books/999/labels", json={"key": "media type", "value": "book"})
+    assert resp.status_code == 404
+
+
+def test_delete_book_label_removes_just_that_key(tmp_path, monkeypatch):
+    client = _client(tmp_path, monkeypatch)
+    _upload_and_wait(
+        client,
+        files={"file": ("book.pdf", _sample_pdf_bytes(), "application/pdf")},
+        data={"langs": "eng+tha"},
+    )
+    book_id = client.get("/api/books").json()[0]["id"]
+    client.put(f"/api/books/{book_id}/labels", json={"key": "media type", "value": "book"})
+    client.put(f"/api/books/{book_id}/labels", json={"key": "content", "value": "QnA"})
+
+    resp = client.delete(f"/api/books/{book_id}/labels/media type")
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == {"labels": {"content": "QnA"}}
+
+
+def test_delete_book_label_returns_404_for_unknown_book(tmp_path, monkeypatch):
+    client = _client(tmp_path, monkeypatch)
+    resp = client.delete("/api/books/999/labels/media type")
+    assert resp.status_code == 404
+
+
+def test_delete_book_also_removes_its_labels(tmp_path, monkeypatch):
+    client = _client(tmp_path, monkeypatch)
+    _upload_and_wait(
+        client,
+        files={"file": ("book.pdf", _sample_pdf_bytes(), "application/pdf")},
+        data={"langs": "eng+tha"},
+    )
+    book_id = client.get("/api/books").json()[0]["id"]
+    client.put(f"/api/books/{book_id}/labels", json={"key": "media type", "value": "book"})
+
+    client.delete(f"/api/books/{book_id}")
+
+    # re-uploading the same file gets a fresh book with no leftover labels
+    _upload_and_wait(
+        client,
+        files={"file": ("book.pdf", _sample_pdf_bytes(), "application/pdf")},
+        data={"langs": "eng+tha"},
+    )
+    assert client.get("/api/books").json()[0]["labels"] == {}
 
 
 # --- Resuming an incomplete review (POST /api/books/{book_id}/resume) ---

@@ -273,3 +273,82 @@ def test_delete_book_also_removes_stray_duplicate_rows(tmp_path):
 
     assert deleted == 2  # both the stale and current row for that page
     assert db.list_documents(conn) == []
+
+
+def test_list_books_labels_defaults_empty(tmp_path):
+    conn = _tmp_conn(tmp_path)
+    db.insert_chunks(conn, "book.pdf", "pdf", "Notes", _one_chunk("text"))
+    assert db.list_books(conn)[0]["labels"] == {}
+
+
+def test_set_book_label_adds_and_updates_a_label(tmp_path):
+    conn = _tmp_conn(tmp_path)
+    db.insert_chunks(conn, "book.pdf", "pdf", "Notes", _one_chunk("text"))
+
+    db.set_book_label(conn, "book.pdf", 1, "media type", "book")
+    assert db.list_books(conn)[0]["labels"] == {"media type": "book"}
+
+    db.set_book_label(conn, "book.pdf", 1, "media type", "audio")
+    assert db.list_books(conn)[0]["labels"] == {"media type": "audio"}
+
+
+def test_set_book_label_supports_multiple_keys(tmp_path):
+    conn = _tmp_conn(tmp_path)
+    db.insert_chunks(conn, "book.pdf", "pdf", "Notes", _one_chunk("text"))
+
+    db.set_book_label(conn, "book.pdf", 1, "media type", "book")
+    db.set_book_label(conn, "book.pdf", 1, "author name or publisher name", "Ajahn Example")
+
+    labels = db.list_books(conn)[0]["labels"]
+    assert labels == {"media type": "book", "author name or publisher name": "Ajahn Example"}
+
+
+def test_get_book_labels_returns_the_same_dict_directly(tmp_path):
+    conn = _tmp_conn(tmp_path)
+    db.insert_chunks(conn, "book.pdf", "pdf", "Notes", _one_chunk("text"))
+    db.set_book_label(conn, "book.pdf", 1, "content", "dhamma talk")
+
+    assert db.get_book_labels(conn, "book.pdf", 1) == {"content": "dhamma talk"}
+    assert db.get_book_labels(conn, "never-uploaded.pdf", 1) == {}
+
+
+def test_delete_book_label_removes_just_that_key(tmp_path):
+    conn = _tmp_conn(tmp_path)
+    db.insert_chunks(conn, "book.pdf", "pdf", "Notes", _one_chunk("text"))
+    db.set_book_label(conn, "book.pdf", 1, "media type", "book")
+    db.set_book_label(conn, "book.pdf", 1, "content", "QnA")
+
+    db.delete_book_label(conn, "book.pdf", 1, "media type")
+
+    assert db.list_books(conn)[0]["labels"] == {"content": "QnA"}
+
+
+def test_delete_book_label_is_a_no_op_for_an_unknown_key(tmp_path):
+    conn = _tmp_conn(tmp_path)
+    db.insert_chunks(conn, "book.pdf", "pdf", "Notes", _one_chunk("text"))
+    db.delete_book_label(conn, "book.pdf", 1, "nope")  # must not raise
+    assert db.list_books(conn)[0]["labels"] == {}
+
+
+def test_set_book_label_is_independent_per_book(tmp_path):
+    conn = _tmp_conn(tmp_path)
+    db.insert_chunks(conn, "a.md", "md", "Notes", _one_chunk("a"))
+    db.insert_chunks(conn, "b.md", "md", "Notes", _one_chunk("b"))
+    db.set_book_label(conn, "a.md", 1, "media type", "book")
+
+    books = {b["source_filename"]: b for b in db.list_books(conn)}
+    assert books["a.md"]["labels"] == {"media type": "book"}
+    assert books["b.md"]["labels"] == {}
+
+
+def test_delete_book_also_removes_its_labels(tmp_path):
+    conn = _tmp_conn(tmp_path)
+    db.insert_chunks(conn, "book.pdf", "pdf", "Notes", _one_chunk("text"))
+    db.set_book_label(conn, "book.pdf", 1, "media type", "book")
+    book_id = db.list_books(conn)[0]["id"]
+
+    db.delete_book(conn, book_id)
+
+    leftover_labels = conn.execute(
+        "SELECT * FROM book_labels WHERE source_filename = 'book.pdf'").fetchall()
+    assert leftover_labels == []
