@@ -20,7 +20,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import book_compiler, categorize, convert, db, review, tts
+from . import book_compiler, categorize, convert, db, review, sources, tts
 
 app = FastAPI(title="AjanDB")
 
@@ -397,12 +397,19 @@ def get_document(doc_id: int):
 def list_books():
     """One entry per uploaded source file (whether it needed OCR or was
     stored as-is), for browsing the library rather than searching it - see
-    db.list_books()'s docstring for how "one book" is identified."""
+    db.list_books()'s docstring for how "one book" is identified. Each
+    entry is annotated with `resumable` - whether a page-by-page review of
+    this exact book was cancelled or abandoned partway through and can be
+    continued (see sources.py) - on top of whatever db.list_books() itself
+    returns (pages_stored/total_pages, ready_for_publish, ...)."""
     conn = db.get_connection()
     try:
-        return db.list_books(conn)
+        books = db.list_books(conn)
     finally:
         conn.close()
+    for book in books:
+        book["resumable"] = sources.exists(book["source_filename"], book["total_pages"])
+    return books
 
 
 @app.get("/api/books/{book_id}")
@@ -422,6 +429,80 @@ def get_book(book_id: int):
         "category": first["category"],
         "chunks": chunks,
     }
+
+
+@app.delete("/api/books/{book_id}")
+def delete_book(book_id: int):
+    """Deletes every stored page of this book - see db.delete_book()'s
+    docstring for exactly what is and isn't touched there (images are left
+    alone, since one can be shared by content hash with another book). Any
+    resumable source for this exact book (see sources.py) is also cleaned
+    up here, since there's nothing left to resume once the book itself is
+    gone."""
+    conn = db.get_connection()
+    try:
+        identity = db.get_book_identity(conn, book_id)
+        deleted = db.delete_book(conn, book_id)
+    finally:
+        conn.close()
+    if not deleted:
+        raise HTTPException(404, "Book not found")
+    if identity:
+        sources.delete(identity[0], identity[1])
+    return {"deleted_pages": deleted}
+
+
+class ReadyForPublishRequest(BaseModel):
+    ready: bool = True
+
+
+@app.post("/api/books/{book_id}/ready-for-publish")
+def set_book_ready_for_publish(book_id: int, req: ReadyForPublishRequest):
+    """Marks (or unmarks) a book as ready for publish - a manual, purely
+    organisational flag for the person curating this library; nothing here
+    actually publishes anything."""
+    conn = db.get_connection()
+    try:
+        identity = db.get_book_identity(conn, book_id)
+        if not identity:
+            raise HTTPException(404, "Book not found")
+        db.set_ready_for_publish(conn, identity[0], identity[1], req.ready)
+    finally:
+        conn.close()
+    return {"ready_for_publish": req.ready}
+
+
+class ResumeReviewRequest(BaseModel):
+    anthropic_api_key: str | None = None  # typed into the frontend - stored only in the browser
+    openai_api_key: str | None = None
+
+
+@app.post("/api/books/{book_id}/resume")
+def resume_book_review(book_id: int, req: ResumeReviewRequest):
+    """Continues a page-by-page review that was cancelled or abandoned
+    before every page was decided - see review.resume() for exactly what
+    "resumable" means and why the original session's own API key can't
+    just be reused."""
+    conn = db.get_connection()
+    try:
+        identity = db.get_book_identity(conn, book_id)
+    finally:
+        conn.close()
+    if not identity:
+        raise HTTPException(404, "Book not found")
+    source_filename, total_pages = identity
+
+    loaded = sources.load(source_filename, total_pages)
+    api_key = None
+    if loaded is not None:
+        _, settings = loaded
+        api_key = _resolve_client_key(settings.get("provider"), req.anthropic_api_key, req.openai_api_key)
+    try:
+        return review.resume(source_filename, total_pages, api_key=api_key)
+    except FileNotFoundError as e:
+        raise HTTPException(404, str(e))
+    except RuntimeError as e:
+        raise HTTPException(503, str(e))
 
 
 def _book_to_markdown(chunks: list[dict]) -> str:

@@ -5,6 +5,7 @@ __pycache__/
 data/*.sqlite3
 data/images/
 data/audio/
+data/sources/
 .env
 cloudflared
 *.log

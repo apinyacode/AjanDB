@@ -553,6 +553,31 @@ async function startReview(file) {
   }
 }
 
+// Continues a review session that was cancelled or abandoned partway
+// through (see backend/sources.py) - called from a book card's "Resume
+// conversion" button in the Data Search tab. Switches to the Data Store
+// tab so the review panel (which lives there) is actually visible.
+async function resumeReview(bookId) {
+  const keys = currentApiKeys();
+  const res = await fetch(`/api/books/${bookId}/resume`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(keys),
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.detail || "Failed to resume review");
+
+  document.querySelector('.tab-btn[data-tab="upload"]').click();
+  reviewSessionId = data.session_id;
+  reviewTotalPages = data.total_pages;
+  reviewModeCheckbox.checked = true;
+  document.getElementById("upload-status").textContent = "";
+  document.getElementById("upload-chunks").innerHTML = "";
+  renderConsole(data.log);
+  setReviewControlsEnabled(false);
+  showReviewPage(data.page);
+}
+
 function showReviewPage(page) {
   stopReadAloud();  // a new page replaced whatever was being read - don't keep reading the old one
   reviewPanel.classList.remove("hidden");
@@ -705,15 +730,24 @@ function renderBookCard(book) {
     `<span>Confidence: ${confidenceText}</span>` +
     (book.needs_review_count
       ? `<span class="badge">${book.needs_review_count} page(s) need review</span>` : "") +
+    (book.resumable ? `<span class="badge badge-resumable">Incomplete</span>` : "") +
     `</div>` +
     `<div class="row">` +
     `<button class="ghost view-book-btn" type="button">View pages</button>` +
     `<a class="ghost" href="/api/books/${book.id}/export" download>Export .md</a>` +
+    (book.resumable
+      ? `<button class="ghost resume-book-btn" type="button">▶ Resume conversion</button>` : "") +
+    `<button class="${book.ready_for_publish ? "" : "ghost"} publish-toggle-btn" type="button">` +
+    (book.ready_for_publish ? "✓ Ready for publish" : "☆ Mark ready for publish") +
+    `</button>` +
+    `<button class="danger delete-book-btn" type="button">Delete</button>` +
     `</div>` +
+    `<p class="status book-card-status"></p>` +
     `<div class="book-chunks hidden"></div>`;
 
   const viewBtn = card.querySelector(".view-book-btn");
   const chunksEl = card.querySelector(".book-chunks");
+  const statusEl = card.querySelector(".book-card-status");
   viewBtn.addEventListener("click", async () => {
     if (!chunksEl.classList.contains("hidden")) {
       chunksEl.classList.add("hidden");
@@ -733,6 +767,60 @@ function renderBookCard(book) {
       viewBtn.textContent = "View pages";
     }
   });
+
+  const publishBtn = card.querySelector(".publish-toggle-btn");
+  publishBtn.addEventListener("click", async () => {
+    const nextReady = !book.ready_for_publish;
+    publishBtn.disabled = true;
+    try {
+      const res = await fetch(`/api/books/${book.id}/ready-for-publish`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ready: nextReady }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Failed to update");
+      book.ready_for_publish = data.ready_for_publish;
+      publishBtn.textContent = book.ready_for_publish ? "✓ Ready for publish" : "☆ Mark ready for publish";
+      publishBtn.classList.toggle("ghost", !book.ready_for_publish);
+    } catch (err) {
+      statusEl.textContent = `Error: ${err.message}`;
+    } finally {
+      publishBtn.disabled = false;
+    }
+  });
+
+  const deleteBtn = card.querySelector(".delete-book-btn");
+  deleteBtn.addEventListener("click", async () => {
+    if (!confirm(`Delete "${book.source_filename}" and all ${book.total_pages} page(s)? This can't be undone.`)) {
+      return;
+    }
+    deleteBtn.disabled = true;
+    try {
+      const res = await fetch(`/api/books/${book.id}`, { method: "DELETE" });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Failed to delete");
+      card.remove();
+    } catch (err) {
+      statusEl.textContent = `Error: ${err.message}`;
+      deleteBtn.disabled = false;
+    }
+  });
+
+  const resumeBtn = card.querySelector(".resume-book-btn");
+  if (resumeBtn) {
+    resumeBtn.addEventListener("click", async () => {
+      resumeBtn.disabled = true;
+      resumeBtn.textContent = "Resuming…";
+      try {
+        await resumeReview(book.id);
+      } catch (err) {
+        statusEl.textContent = `Error: ${err.message}`;
+        resumeBtn.disabled = false;
+        resumeBtn.textContent = "▶ Resume conversion";
+      }
+    });
+  }
 
   return card;
 }

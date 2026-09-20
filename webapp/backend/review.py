@@ -11,9 +11,15 @@ likely to finish comfortably inside normal HTTP/tunnel timeouts than
 converting a whole book in one request ever was.
 
 Session state lives in memory only (same tradeoff as the async upload jobs
-in main.py: a server restart mid-review loses that session - re-start the
-review from scratch). Sessions are short-lived by design: a human is
-actively looking at one while it's open.
+in main.py: a server restart mid-review loses that session). Sessions are
+short-lived by design: a human is actively looking at one while it's open.
+Losing the in-memory session doesn't lose the *pages already approved*
+(they're in the database) or the ability to pick up the rest, though - see
+resume() and sources.py: every session's original PDF plus its settings
+and last-reached page are kept in durable storage until the session
+finishes every page (cancelling or simply abandoning it - closing the
+browser, a server restart - leaves that storage in place specifically so
+resume() has something to work from).
 
 State machine per session:
   - `pending` holds the page currently shown to the human, or None right
@@ -33,11 +39,13 @@ import concurrent.futures
 import difflib
 import os
 import re
+import shutil
+import tempfile
 import threading
 import time
 import uuid
 
-from . import categorize, convert, db, spellcheck
+from . import categorize, convert, db, sources, spellcheck
 
 _sessions: dict[str, dict] = {}
 _lock = threading.Lock()
@@ -383,7 +391,23 @@ def start(pdf_path: str, filename: str, engine: str = "classical", provider: str
     with _lock:
         _sessions[session_id] = session
 
+    sources.save(pdf_path, filename, total_pages, _resume_settings(session, next_index=0))
+
     return {"session_id": session_id, "total_pages": total_pages, "page": page, "log": session["log"]}
+
+
+def _resume_settings(session: dict, next_index: int) -> dict:
+    """The subset of session state resume() needs to continue later -
+    never the API key (see sources.py's docstring on why)."""
+    return {
+        "engine": session["engine"],
+        "provider": session["provider"],
+        "model": session["model"],
+        "langs": session["langs"],
+        "category": session["category"],
+        "auto_validate": session["auto_validate"],
+        "next_index": next_index,
+    }
 
 
 def _advance(session_id: str, session: dict) -> dict:
@@ -394,6 +418,9 @@ def _advance(session_id: str, session: dict) -> dict:
     if next_index >= session["total_pages"]:
         _log(session, f"Finished: {len(session['saved_chunk_ids'])} page(s) saved")
         log = session["log"]
+        # every page has now been approved or deliberately skipped - nothing
+        # left to resume, unlike cancel() (see sources.py's docstring).
+        sources.delete(session["filename"], session["total_pages"])
         _cleanup(session_id, session)
         return {
             "done": True, "page": None,
@@ -410,6 +437,7 @@ def _advance(session_id: str, session: dict) -> dict:
         raise
     session["current_index"] = next_index
     session["pending"] = page
+    sources.update(session["filename"], session["total_pages"], _resume_settings(session, next_index))
     _log(session, f"Page {next_index + 1}/{session['total_pages']} ready for review")
     return {
         "done": False, "page": page,
@@ -531,7 +559,10 @@ def verify_second_opinion(session_id: str, provider: str = None, model: str = No
 
 def cancel(session_id: str) -> dict:
     """Ends the session without converting or saving anything further.
-    Pages already approved before cancelling stay in the database."""
+    Pages already approved before cancelling stay in the database.
+    Deliberately does NOT delete this book's durable source (see
+    sources.py) - unlike _advance()'s "done" branch, cancelling mid-review
+    is exactly the situation resume() exists for."""
     session = _get_session(session_id)
     _log(session, f"Cancelled after page {session['current_index'] + 1}/"
                   f"{session['total_pages']} ({len(session['saved_chunk_ids'])} page(s) saved)")
@@ -542,3 +573,70 @@ def cancel(session_id: str) -> dict:
         "category": session["category"] or "Uncategorized",
         "log": log,
     }
+
+
+def resume(source_filename: str, total_pages: int, api_key: str = None) -> dict:
+    """Continues a review session that was cancelled or simply abandoned
+    (browser closed, server restarted) before every page was decided -
+    loads the durable source PDF and settings sources.save() recorded
+    during the original start() call, and converts+returns the page after
+    wherever that session last got to, instead of starting over from page
+    1. Raises FileNotFoundError if this book has nothing resumable (either
+    it was never reviewed page-by-page at all, or it already finished -
+    see _advance()'s "done" branch, which deletes this once there's
+    nothing left to resume).
+
+    `api_key` is optional and only matters for a vision-engine session:
+    the original session's own key is never persisted (same "never saved
+    server-side" rule every browser-supplied key in this app follows), so
+    resuming one needs a key supplied again here, unless the backend's own
+    environment already has one configured."""
+    loaded = sources.load(source_filename, total_pages)
+    if loaded is None:
+        raise FileNotFoundError(
+            f"No resumable review session found for {source_filename!r} - it was either "
+            "never reviewed page-by-page, or already finished.")
+    saved_pdf_path, settings = loaded
+
+    # review.py always takes ownership of (and eventually deletes) a
+    # session's pdf_path - operate on a throwaway copy so the durable
+    # original survives in case this resumed session is cancelled again.
+    fd, tmp_path = tempfile.mkstemp(suffix=".pdf")
+    os.close(fd)
+    shutil.copy(saved_pdf_path, tmp_path)
+
+    session_id = uuid.uuid4().hex
+    session = {
+        "session_id": session_id,
+        "pdf_path": tmp_path,
+        "filename": source_filename,
+        "engine": settings["engine"],
+        "provider": settings.get("provider"),
+        "model": settings.get("model"),
+        "langs": settings.get("langs"),
+        "api_key": api_key,
+        "auto_validate": bool(settings.get("auto_validate", False)),
+        "category": settings.get("category"),
+        "total_pages": total_pages,
+        "current_index": None,
+        "pending": None,
+        "saved_chunk_ids": [],
+        "log": [],
+    }
+    next_index = settings.get("next_index", 0)
+    _log(session, f"Resuming: {source_filename} from page {next_index + 1}/{total_pages} "
+                  f"(engine={session['engine']})")
+
+    try:
+        page = _convert_one_page(session, next_index)  # may raise - session not registered below if so
+    except Exception as e:
+        os.unlink(tmp_path)
+        _log(session, f"ERROR converting page {next_index + 1}/{total_pages}: {e}")
+        raise
+    session["current_index"] = next_index
+    session["pending"] = page
+    _log(session, f"Page {next_index + 1}/{total_pages} ready for review")
+    with _lock:
+        _sessions[session_id] = session
+
+    return {"session_id": session_id, "total_pages": total_pages, "page": page, "log": session["log"]}

@@ -2,7 +2,7 @@ import time
 
 from fastapi.testclient import TestClient
 
-from backend import db, main as main_module
+from backend import db, main as main_module, sources
 
 
 def _client(tmp_path, monkeypatch):
@@ -621,6 +621,127 @@ def test_export_book_rewrites_image_links_to_absolute_urls(tmp_path, monkeypatch
     image_resp = client.get(image_url)
     assert image_resp.status_code == 200
     assert image_resp.headers["content-type"] == "image/jpeg"
+
+
+def test_list_books_marks_bulk_uploads_as_not_resumable(tmp_path, monkeypatch):
+    # bulk /api/upload is all-or-nothing (see sources.py's docstring) -
+    # nothing is ever resumable from that path.
+    client = _client(tmp_path, monkeypatch)
+    _upload_and_wait(
+        client,
+        files={"file": ("book.pdf", _sample_pdf_bytes(), "application/pdf")},
+        data={"langs": "eng+tha"},
+    )
+    assert client.get("/api/books").json()[0]["resumable"] is False
+
+
+def test_list_books_marks_a_cancelled_review_as_resumable(tmp_path, monkeypatch):
+    client = _client(tmp_path, monkeypatch)
+    started = _start_review(client).json()
+    client.post(f"/api/review/{started['session_id']}/approve", json={})  # page 1 -> 2
+    client.post(f"/api/review/{started['session_id']}/cancel")
+
+    books = client.get("/api/books").json()
+    assert len(books) == 1
+    assert books[0]["resumable"] is True
+
+
+# --- Deleting a book (DELETE /api/books/{book_id}) ---
+
+def test_delete_book_removes_it_from_the_list(tmp_path, monkeypatch):
+    client = _client(tmp_path, monkeypatch)
+    _upload_and_wait(
+        client,
+        files={"file": ("book.pdf", _sample_pdf_bytes(), "application/pdf")},
+        data={"langs": "eng+tha"},
+    )
+    book_id = client.get("/api/books").json()[0]["id"]
+
+    resp = client.delete(f"/api/books/{book_id}")
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["deleted_pages"] == 3
+    assert client.get("/api/books").json() == []
+
+
+def test_delete_book_returns_404_for_unknown_id(tmp_path, monkeypatch):
+    client = _client(tmp_path, monkeypatch)
+    assert client.delete("/api/books/999").status_code == 404
+
+
+def test_delete_book_also_cleans_up_its_resumable_source(tmp_path, monkeypatch):
+    client = _client(tmp_path, monkeypatch)
+    started = _start_review(client).json()
+    client.post(f"/api/review/{started['session_id']}/approve", json={})
+    client.post(f"/api/review/{started['session_id']}/cancel")
+    book_id = client.get("/api/books").json()[0]["id"]
+    assert sources.exists("book.pdf", 3)
+
+    resp = client.delete(f"/api/books/{book_id}")
+
+    assert resp.status_code == 200, resp.text
+    assert not sources.exists("book.pdf", 3)
+
+
+# --- Ready-for-publish flag (POST /api/books/{book_id}/ready-for-publish) ---
+
+def test_ready_for_publish_defaults_false_then_can_be_set_and_cleared(tmp_path, monkeypatch):
+    client = _client(tmp_path, monkeypatch)
+    _upload_and_wait(
+        client,
+        files={"file": ("book.pdf", _sample_pdf_bytes(), "application/pdf")},
+        data={"langs": "eng+tha"},
+    )
+    book_id = client.get("/api/books").json()[0]["id"]
+    assert client.get("/api/books").json()[0]["ready_for_publish"] == 0
+
+    resp = client.post(f"/api/books/{book_id}/ready-for-publish", json={"ready": True})
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == {"ready_for_publish": True}
+    assert client.get("/api/books").json()[0]["ready_for_publish"] == 1
+
+    client.post(f"/api/books/{book_id}/ready-for-publish", json={"ready": False})
+    assert client.get("/api/books").json()[0]["ready_for_publish"] == 0
+
+
+def test_ready_for_publish_returns_404_for_unknown_id(tmp_path, monkeypatch):
+    client = _client(tmp_path, monkeypatch)
+    resp = client.post("/api/books/999/ready-for-publish", json={"ready": True})
+    assert resp.status_code == 404
+
+
+# --- Resuming an incomplete review (POST /api/books/{book_id}/resume) ---
+
+def test_resume_endpoint_continues_from_the_cancelled_page(tmp_path, monkeypatch):
+    client = _client(tmp_path, monkeypatch)
+    started = _start_review(client).json()
+    client.post(f"/api/review/{started['session_id']}/approve", json={})  # page 1 -> 2
+    client.post(f"/api/review/{started['session_id']}/cancel")
+    book_id = client.get("/api/books").json()[0]["id"]
+
+    resp = client.post(f"/api/books/{book_id}/resume", json={})
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["page"]["page_number"] == 2
+    client.post(f"/api/review/{body['session_id']}/cancel")  # tidy up
+
+
+def test_resume_endpoint_returns_404_for_a_book_with_nothing_resumable(tmp_path, monkeypatch):
+    client = _client(tmp_path, monkeypatch)
+    _upload_and_wait(
+        client,
+        files={"file": ("book.pdf", _sample_pdf_bytes(), "application/pdf")},
+        data={"langs": "eng+tha"},
+    )
+    book_id = client.get("/api/books").json()[0]["id"]
+
+    resp = client.post(f"/api/books/{book_id}/resume", json={})
+    assert resp.status_code == 404
+
+
+def test_resume_endpoint_returns_404_for_unknown_book_id(tmp_path, monkeypatch):
+    client = _client(tmp_path, monkeypatch)
+    resp = client.post("/api/books/999/resume", json={})
+    assert resp.status_code == 404
 
 
 def test_tts_endpoint_returns_audio_url(tmp_path, monkeypatch):

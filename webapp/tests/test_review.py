@@ -4,7 +4,7 @@ import time
 
 import pytest
 
-from backend import db, review
+from backend import db, review, sources
 
 
 @pytest.fixture(autouse=True)
@@ -586,3 +586,109 @@ def test_cross_check_exception_contributes_no_flags_without_failing_the_page():
         raise RuntimeError("simulated provider error")
 
     assert review._run_cross_checks_with_timeout([raises]) == [[]]
+
+
+# --- Resuming an incomplete review session (see sources.py) ---
+
+def test_start_saves_a_resumable_source(tmp_path):
+    review.start(_session_pdf(tmp_path), "book.pdf", langs="eng+tha")
+    assert sources.exists("book.pdf", 3)
+    _, settings = sources.load("book.pdf", 3)
+    assert settings["next_index"] == 0
+    assert settings["langs"] == "eng+tha"
+
+
+def test_cancel_leaves_the_source_resumable_at_the_right_page(tmp_path):
+    started = review.start(_session_pdf(tmp_path), "book.pdf", langs="eng+tha")
+    review.approve(started["session_id"])  # page 1 -> page 2
+
+    review.cancel(started["session_id"])
+
+    assert sources.exists("book.pdf", 3)
+    _, settings = sources.load("book.pdf", 3)
+    assert settings["next_index"] == 1  # stopped having just moved onto page 2
+
+
+def test_finishing_a_review_deletes_the_resumable_source(tmp_path):
+    started = review.start(_session_pdf(tmp_path), "book.pdf", langs="eng+tha")
+    session_id = started["session_id"]
+    review.approve(session_id)  # page 1 -> 2
+    review.approve(session_id)  # page 2 -> 3
+    review.approve(session_id)  # page 3 -> done
+
+    assert not sources.exists("book.pdf", 3)
+
+
+def test_resume_raises_when_nothing_is_resumable(tmp_path):
+    with pytest.raises(FileNotFoundError):
+        review.resume("never-reviewed.pdf", 3)
+
+
+def test_resume_continues_from_the_last_reached_page(tmp_path):
+    started = review.start(_session_pdf(tmp_path), "book.pdf", langs="eng+tha")
+    review.approve(started["session_id"])  # page 1 saved, now on page 2
+    review.cancel(started["session_id"])
+
+    result = review.resume("book.pdf", 3)
+
+    assert result["page"]["page_number"] == 2  # not page 1 again
+    assert result["total_pages"] == 3
+    assert "Resuming: book.pdf from page 2/3" in result["log"][0]
+
+
+def test_resume_preserves_the_original_engine_and_provider(tmp_path, monkeypatch):
+    captured_providers = []
+
+    def fake_pdf_to_markdown_vision(pdf_path, provider=None, model=None, api_key=None):
+        captured_providers.append(provider)
+        return [{"page_number": 1, "markdown": "vision text", "confidence": 90.0,
+                  "needs_review": False, "flagged_snippets": []}]
+
+    monkeypatch.setattr(review.convert, "pdf_to_markdown_vision", fake_pdf_to_markdown_vision)
+    started = review.start(_session_pdf(tmp_path), "book.pdf", engine="vision",
+                            provider="openai", api_key="fake-key")
+    review.cancel(started["session_id"])
+
+    result = review.resume("book.pdf", 3, api_key="fake-key-again")
+
+    assert captured_providers[-1] == "openai"  # resumed with the same provider, not the default
+    assert result["page"]["markdown"] == "vision text"
+
+
+def test_resumed_session_can_complete_normally_and_cleans_up(tmp_path):
+    started = review.start(_session_pdf(tmp_path), "book.pdf", langs="eng+tha")
+    review.approve(started["session_id"])  # page 1 saved
+    review.cancel(started["session_id"])
+
+    resumed = review.resume("book.pdf", 3)
+    session_id = resumed["session_id"]
+    review.approve(session_id)  # page 2 saved -> page 3
+    result = review.approve(session_id)  # page 3 saved -> done
+
+    assert result["done"] is True
+    assert result["total_saved"] == 2  # this resumed session's own approvals
+    assert not sources.exists("book.pdf", 3)
+
+    conn = db.get_connection()
+    try:
+        book = [b for b in db.list_books(conn) if b["source_filename"] == "book.pdf"][0]
+    finally:
+        conn.close()
+    assert book["pages_stored"] == 3  # page 1 (before cancel) + pages 2-3 (after resume)
+
+
+def test_resume_updates_category_decided_partway_through_the_original_session(tmp_path):
+    # category is None until the first approve() auto-suggests one - a
+    # resume must see that decision, not silently re-guess (and possibly
+    # pick something different) for the remaining pages of the same book.
+    started = review.start(_session_pdf(tmp_path), "book.pdf", langs="eng+tha",
+                            category="Field Notes")
+    review.approve(started["session_id"])
+    review.cancel(started["session_id"])
+
+    _, settings = sources.load("book.pdf", 3)
+    assert settings["category"] == "Field Notes"
+
+    result = review.resume("book.pdf", 3)
+    session = review._get_session(result["session_id"])
+    assert session["category"] == "Field Notes"

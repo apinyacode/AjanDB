@@ -197,3 +197,79 @@ def test_reuploading_a_page_does_not_duplicate_or_double_count_it(tmp_path):
     assert len(chunks) == 2  # not 3
     assert chunks[0]["markdown"] == "new text"  # latest wins, not the stale copy
     assert chunks[1]["markdown"] == "page two"
+
+
+def test_list_books_ready_for_publish_defaults_false(tmp_path):
+    conn = _tmp_conn(tmp_path)
+    db.insert_chunks(conn, "book.pdf", "pdf", "Notes", _one_chunk("text"))
+    assert db.list_books(conn)[0]["ready_for_publish"] == 0
+
+
+def test_set_ready_for_publish_toggles_the_flag(tmp_path):
+    conn = _tmp_conn(tmp_path)
+    db.insert_chunks(conn, "book.pdf", "pdf", "Notes", _one_chunk("text"))
+    book_id = db.list_books(conn)[0]["id"]
+
+    db.set_ready_for_publish(conn, "book.pdf", 1, True)
+    assert db.list_books(conn)[0]["ready_for_publish"] == 1
+
+    db.set_ready_for_publish(conn, "book.pdf", 1, False)
+    assert db.list_books(conn)[0]["ready_for_publish"] == 0
+    assert db.list_books(conn)[0]["id"] == book_id  # unrelated to the book's own identity
+
+
+def test_set_ready_for_publish_is_independent_per_book(tmp_path):
+    conn = _tmp_conn(tmp_path)
+    db.insert_chunks(conn, "a.md", "md", "Notes", _one_chunk("a"))
+    db.insert_chunks(conn, "b.md", "md", "Notes", _one_chunk("b"))
+    db.set_ready_for_publish(conn, "a.md", 1, True)
+
+    books = {b["source_filename"]: b for b in db.list_books(conn)}
+    assert books["a.md"]["ready_for_publish"] == 1
+    assert books["b.md"]["ready_for_publish"] == 0
+
+
+def test_delete_book_removes_all_its_chunks_and_flag(tmp_path):
+    conn = _tmp_conn(tmp_path)
+    db.insert_chunks(conn, "book.pdf", "pdf", "Notes",
+                      [{"page_number": 1, "markdown": "p1", "confidence": 90.0, "needs_review": False},
+                       {"page_number": 2, "markdown": "p2", "confidence": 90.0, "needs_review": False}])
+    db.insert_chunks(conn, "other.md", "md", "Notes", _one_chunk("keep me"))
+    book_id = [b for b in db.list_books(conn) if b["source_filename"] == "book.pdf"][0]["id"]
+    db.set_ready_for_publish(conn, "book.pdf", 2, True)
+
+    deleted = db.delete_book(conn, book_id)
+
+    assert deleted == 2
+    remaining = db.list_books(conn)
+    assert len(remaining) == 1
+    assert remaining[0]["source_filename"] == "other.md"
+    # the flag row for the deleted book shouldn't linger as dead state either
+    leftover_flags = conn.execute(
+        "SELECT * FROM book_flags WHERE source_filename = 'book.pdf'").fetchall()
+    assert leftover_flags == []
+
+
+def test_delete_book_returns_zero_for_unknown_id(tmp_path):
+    conn = _tmp_conn(tmp_path)
+    assert db.delete_book(conn, 99999) == 0
+
+
+def test_delete_book_also_removes_stray_duplicate_rows(tmp_path):
+    # A re-uploaded page leaves an extra, superseded row (see the
+    # re-uploading test above) - deleting the book must not leave that
+    # orphaned row behind just because get_book_chunks()/list_books() don't
+    # surface it.
+    conn = _tmp_conn(tmp_path)
+    db.insert_chunks(conn, "book.pdf", "pdf", "Notes",
+                      [{"page_number": 1, "markdown": "old", "confidence": 50.0, "needs_review": False}],
+                      total_pages=1)
+    db.insert_chunks(conn, "book.pdf", "pdf", "Notes",
+                      [{"page_number": 1, "markdown": "new", "confidence": 90.0, "needs_review": False}],
+                      total_pages=1)
+    book_id = db.list_books(conn)[0]["id"]
+
+    deleted = db.delete_book(conn, book_id)
+
+    assert deleted == 2  # both the stale and current row for that page
+    assert db.list_documents(conn) == []

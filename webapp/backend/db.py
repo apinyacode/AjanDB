@@ -68,6 +68,13 @@ def init_db(conn: sqlite3.Connection):
             INSERT INTO documents_fts(rowid, source_filename, markdown, category)
             VALUES (new.id, new.source_filename, new.markdown, new.category);
         END;
+
+        CREATE TABLE IF NOT EXISTS book_flags (
+            source_filename TEXT NOT NULL,
+            total_pages INTEGER NOT NULL,
+            ready_for_publish INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY (source_filename, total_pages)
+        );
         """
     )
     conn.commit()
@@ -158,23 +165,83 @@ def list_books(conn: sqlite3.Connection) -> list[dict]:
     with the group's lowest row id serving as a lightweight "book id" for
     get_book_chunks()/export. Two different files that happen to share both
     a filename and a page count would incorrectly merge into one entry; a
-    real book id column would be the fix if that ever matters in practice."""
+    real book id column would be the fix if that ever matters in practice.
+
+    `ready_for_publish` comes from the separate book_flags table (see
+    set_ready_for_publish()) keyed the same way, defaulting to 0/false for
+    a book that's never had the flag touched."""
     rows = conn.execute(
         _LATEST_PER_PAGE_CTE
         + """
-        SELECT MIN(id) AS id, source_filename, source_type, total_pages,
-               MAX(category) AS category,
+        SELECT MIN(latest_per_page.id) AS id, latest_per_page.source_filename,
+               latest_per_page.source_type, latest_per_page.total_pages,
+               MAX(latest_per_page.category) AS category,
                COUNT(*) AS pages_stored,
-               SUM(needs_review) AS needs_review_count,
-               AVG(confidence) AS avg_confidence,
-               MIN(uploaded_at) AS first_uploaded_at,
-               MAX(uploaded_at) AS last_uploaded_at
+               SUM(latest_per_page.needs_review) AS needs_review_count,
+               AVG(latest_per_page.confidence) AS avg_confidence,
+               MIN(latest_per_page.uploaded_at) AS first_uploaded_at,
+               MAX(latest_per_page.uploaded_at) AS last_uploaded_at,
+               COALESCE(MAX(book_flags.ready_for_publish), 0) AS ready_for_publish
         FROM latest_per_page
-        GROUP BY source_filename, total_pages
+        LEFT JOIN book_flags
+            ON book_flags.source_filename = latest_per_page.source_filename
+           AND book_flags.total_pages = latest_per_page.total_pages
+        GROUP BY latest_per_page.source_filename, latest_per_page.total_pages
         ORDER BY last_uploaded_at DESC
         """
     ).fetchall()
     return [dict(r) for r in rows]
+
+
+def get_book_identity(conn: sqlite3.Connection, book_id: int) -> tuple[str, int] | None:
+    """Resolves a book_id (from list_books()) to the (source_filename,
+    total_pages) pair that actually identifies it - the same anchor lookup
+    get_book_chunks()/delete_book() each need, factored out so callers that
+    only want the identity (e.g. main.py's resume/ready-for-publish
+    endpoints) don't have to fetch every chunk just to get it."""
+    row = conn.execute(
+        "SELECT source_filename, total_pages FROM documents WHERE id = ?", (book_id,)
+    ).fetchone()
+    return (row["source_filename"], row["total_pages"]) if row else None
+
+
+def set_ready_for_publish(conn: sqlite3.Connection, source_filename: str,
+                           total_pages: int, ready: bool) -> None:
+    conn.execute(
+        """
+        INSERT INTO book_flags (source_filename, total_pages, ready_for_publish)
+        VALUES (?, ?, ?)
+        ON CONFLICT (source_filename, total_pages)
+        DO UPDATE SET ready_for_publish = excluded.ready_for_publish
+        """,
+        (source_filename, total_pages, int(bool(ready))),
+    )
+    conn.commit()
+
+
+def delete_book(conn: sqlite3.Connection, book_id: int) -> int:
+    """Deletes every chunk (all rows, not just the latest-per-page ones -
+    including any stray duplicate rows from a re-upload, see
+    _LATEST_PER_PAGE_CTE's comment) belonging to the book `book_id`
+    identifies, plus its book_flags row if any. Returns how many document
+    rows were deleted (0 if book_id didn't match anything). Does not touch
+    data/images/ or data/sources/ - images may be shared by content hash
+    with another book, and a resumable source is cleaned up by review.py's
+    own lifecycle, not by this."""
+    identity = get_book_identity(conn, book_id)
+    if not identity:
+        return 0
+    source_filename, total_pages = identity
+    cur = conn.execute(
+        "DELETE FROM documents WHERE source_filename = ? AND total_pages = ?",
+        (source_filename, total_pages),
+    )
+    conn.execute(
+        "DELETE FROM book_flags WHERE source_filename = ? AND total_pages = ?",
+        (source_filename, total_pages),
+    )
+    conn.commit()
+    return cur.rowcount
 
 
 def get_book_chunks(conn: sqlite3.Connection, book_id: int) -> list[dict] | None:
@@ -183,11 +250,10 @@ def get_book_chunks(conn: sqlite3.Connection, book_id: int) -> list[dict] | None
     Returns the current chunk for each page sharing that row's
     (source_filename, total_pages), ordered by page number, or None if
     book_id doesn't match any row."""
-    anchor = conn.execute(
-        "SELECT source_filename, total_pages FROM documents WHERE id = ?", (book_id,)
-    ).fetchone()
-    if not anchor:
+    identity = get_book_identity(conn, book_id)
+    if not identity:
         return None
+    source_filename, total_pages = identity
     rows = conn.execute(
         _LATEST_PER_PAGE_CTE
         + """
@@ -195,7 +261,7 @@ def get_book_chunks(conn: sqlite3.Connection, book_id: int) -> list[dict] | None
         WHERE source_filename = ? AND total_pages = ?
         ORDER BY page_number
         """,
-        (anchor["source_filename"], anchor["total_pages"]),
+        (source_filename, total_pages),
     ).fetchall()
     return [dict(r) for r in rows]
 

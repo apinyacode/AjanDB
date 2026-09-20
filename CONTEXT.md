@@ -73,7 +73,23 @@ for the frontend's live console.
 **Storage** (`webapp/backend/db.py`) — SQLite + FTS5. `list_books()` / `get_book_chunks()`
 group chunks by `(source_filename, total_pages)` and dedupe re-uploaded pages via a
 `_LATEST_PER_PAGE_CTE` (most-recent row per page wins) — re-uploading doesn't delete the
-old row, it just becomes an unused extra one that browsing/export ignore.
+old row, it just becomes an unused extra one that browsing/export ignore. A separate
+`book_flags` table (keyed the same way) holds the one per-book flag that doesn't fit the
+per-chunk row model: `ready_for_publish` (see "Managing stored books" below). `delete_book()`
+removes every row (including stray superseded duplicates) for a book, plus its flag row - it
+never touches `data/images/` or `data/sources/`, since an image can be shared by content hash
+with another book and a resumable source is cleaned up by review.py's own lifecycle.
+
+**Resumable sources** (`webapp/backend/sources.py`) — every page-by-page review session
+(`review.start()`) keeps a durable copy of its original PDF plus its settings (engine,
+provider, model, langs, category, `auto_validate`) and last-reached page index, under
+`webapp/data/sources/<hash-of-filename-and-total_pages>.{pdf,json}` - the one place in this
+app that deliberately keeps the original upload rather than just the converted result (see
+that module's docstring for why: a review session can end - cancelled, or just abandoned -
+long before conversion finishes, and continuing later needs the file back). Deleted once
+`review._advance()` reaches the last page naturally (nothing left to resume); kept
+indefinitely otherwise, same "no automatic cleanup" tradeoff already accepted for
+`data/images/`.
 
 **Text-to-speech** (`webapp/backend/tts.py`) — `get_or_synthesize(text)` fetches an Azure
 Speech access token, POSTs SSML to Azure's TTS REST endpoint, and caches the returned MP3
@@ -211,6 +227,21 @@ features" below) because highlighting large or near-whole-page spans wasn't a us
 - **Book browsing/export** — groups uploaded pages into "books," dedupes re-uploaded pages,
   `.md` export rewrites relative image links to absolute URLs (a downloaded file has no
   "current page" to resolve a relative link against).
+- **Managing stored books** (Data Search tab, each book card) —
+  - **Delete** (`DELETE /api/books/{id}`) removes every stored page of a book after a
+    confirm() prompt (destructive, no undo) - leaves `data/images/`/`data/sources/` alone
+    (see db.delete_book()'s docstring for why).
+  - **Ready for publish** (`POST /api/books/{id}/ready-for-publish`) is a manual,
+    purely-organisational toggle for the person curating the library - nothing here actually
+    publishes anything anywhere. Backed by the `book_flags` table.
+  - **Resume conversion** appears only on a book with `resumable: true` (see sources.py
+    above) - a page-by-page review that was cancelled or abandoned before finishing. Clicking
+    it (`POST /api/books/{id}/resume` → `review.resume()`) switches to the Data Store tab and
+    re-opens the review panel at the first page after wherever that session last got to, with
+    the same engine/provider/settings it started with. The one thing that can't carry over is
+    the API key (never persisted, same rule every browser-supplied key in this app follows) -
+    resuming a vision-engine session needs one supplied again, unless the backend's own
+    environment already has one configured.
 - **Data Generation** — keyword-searches stored chunks and asks Claude/GPT to synthesise a
   coherent book from the matches; strips embedded image markdown down to a `[label]`
   placeholder before sending anything to an LLM.
@@ -256,7 +287,7 @@ correct from passing tests alone.
 
 ## Current state
 
-**196 tests pass** (44 in `pdf_to_docx_pipeline`, 152 in `webapp`), covering: the SQLite/FTS5
+**228 tests pass** (44 in `pdf_to_docx_pipeline`, 184 in `webapp`), covering: the SQLite/FTS5
 layer and duplicate-page dedup, per-page/per-character-budget chunking and image handling,
 category suggestion with graceful no-key fallback, the book compiler's retrieval and error
 handling for both providers, the review session state machine (including recovery from a
@@ -264,8 +295,11 @@ failed page conversion and the second-opinion word-diff), Thai spell-checking, s
 TTS (voice selection, caching, the token-fetch + synthesize call chain, the `/api/tts` and
 `/audio/{filename}` endpoints — all against a mocked Azure client, no billed calls in CI),
 the multi-signal flagging union (each of the four signals firing/not-firing independently,
-gated correctly by engine/provider, and deduped when they overlap), and the FastAPI endpoints
-via `TestClient`.
+gated correctly by engine/provider, and deduped when they overlap), `sources.py`'s durable
+PDF+settings storage, and delete/ready-for-publish/resume (including a resumed session
+picking up the original engine/provider/category, and the source being cleaned up once a
+review finishes naturally but kept after a cancel), and the FastAPI endpoints via
+`TestClient`.
 
 **Shipped, in build order:** upload/search/chat webapp → per-page chunking with OCR
 confidence → async uploads → page-by-page review mode → live progress console → book
@@ -277,10 +311,27 @@ flagging) → tunnel-timeout fix (bounded concurrent cross-checks) → opt-in to
 second-model validation and Read aloud → **review UI redesign**: dropped confidence/
 multi-signal highlighting (a real usability complaint - it painted too much of the page to
 mean anything), replaced the static Thai-typo summary line with click-to-correct inline
-suggestions.
+suggestions → **book management**: delete, ready-for-publish, and resume-conversion per book
+in the Data Search tab (the last of which needed the first real durable storage of an
+original upload - see `sources.py` above).
 
 **Known limitations:**
 
+- **Resumable sources are a real change to what this app retains, not just a UI feature.**
+  Every other part of AjanDB deliberately discards the original upload once conversion
+  finishes - converted markdown is stored purely as text in SQLite, one row per chunk, never
+  written back out to a file of its own (Data Search's **Export .md** is the only way
+  converted text leaves the database as an actual file). Page-by-page review now keeps a full
+  copy of the original PDF under `data/sources/` for as long as that review is incomplete,
+  specifically so it can be resumed - worth knowing if "we don't keep your file" was
+  something you were relying on for a review-mode upload specifically (bulk `/api/upload` is
+  unaffected - it never retains anything, since it's all-or-nothing with nothing partial to
+  resume).
+- No cache eviction for `data/sources/` beyond the two cases that already clear it (a review
+  reaching its last page naturally, or its book being deleted via the Data Search tab) - a
+  session that's simply abandoned (browser closed, never resumed, book never deleted either)
+  leaves its source file there indefinitely. Same "no garbage collection" tradeoff already
+  accepted for `data/images/`.
 - **Vision-LLM confidence is the model's own self-reported estimate — explicitly *not*
   calibrated**, unlike Tesseract's real per-character score (well-calibrated as a *relative*
   ranking, not independently verified accuracy either). This is why flagging no longer relies

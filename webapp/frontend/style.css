@@ -137,6 +137,17 @@ button:hover { opacity: 0.9; }
   border-color: var(--border);
 }
 
+.danger {
+  background: transparent;
+  color: var(--danger);
+  border-color: var(--danger);
+}
+
+.danger:hover {
+  background: var(--danger-bg);
+  opacity: 1;
+}
+
 a.ghost {
   display: inline-block;
   padding: 0.5rem 1.1rem;
@@ -294,6 +305,10 @@ mark {
   padding: 0.1rem 0.5rem;
   border-radius: 999px;
   opacity: 1;
+}
+
+.badge-resumable {
+  background: var(--accent);
 }
 
 .checkbox-label {
