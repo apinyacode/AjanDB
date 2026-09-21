@@ -14,6 +14,7 @@ flagged_snippets; editing a flagged word away makes its highlight
 disappear (see app.js's updateReviewHighlight) without re-running the
 check.
 """
+import difflib
 import re
 
 from pythainlp.corpus import thai_words
@@ -25,6 +26,30 @@ _THAI_CHAR_RE = re.compile(r"[฀-๿]")
 # Single Thai vowels/tone marks tokenize out on their own sometimes and are
 # never worth a dictionary lookup by themselves.
 _MIN_WORD_LEN = 2
+
+
+def contains_thai(text: str) -> bool:
+    return bool(_THAI_CHAR_RE.search(text))
+
+
+def tokenizer_divergence(text: str) -> float:
+    """Returns 0-100 agreement between the "newmm" and "longest" pythainlp
+    tokenizations of `text` (see difflib.SequenceMatcher.ratio()) - a
+    second, independent signal (alongside ensemble-model disagreement, see
+    review.py's ensemble verification) that a disputed span is actually
+    garbled rather than just harmlessly re-segmented: a clean, correctly-
+    transcribed span tends to tokenize the same way regardless of engine,
+    since there's exactly one right way to split it. Corrupted text tends
+    to force very different segmentations depending on which fallback each
+    engine takes when nothing matches cleanly - "newmm"'s graph-based
+    max-matching and "longest"'s greedy-longest-match handle an unfamiliar
+    substring differently (see find_thai_typos's docstring on why
+    "longest" alone is used there). Only meaningful for Thai text - see
+    contains_thai; non-Thai input will just tokenize as a single token in
+    both engines and trivially agree."""
+    a_tokens = word_tokenize(text, engine="newmm")
+    b_tokens = word_tokenize(text, engine="longest")
+    return round(difflib.SequenceMatcher(None, a_tokens, b_tokens, autojunk=False).ratio() * 100, 1)
 
 
 def find_thai_typos(markdown: str) -> list[dict]:

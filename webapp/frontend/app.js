@@ -93,13 +93,17 @@ engineSelect.addEventListener("change", () => {
 
 const reviewModeCheckbox = document.getElementById("review-mode-checkbox");
 const autoValidateCheckbox = document.getElementById("auto-validate-checkbox");
+const ensembleVerifyCheckbox = document.getElementById("ensemble-verify-checkbox");
 const enableReadAloudCheckbox = document.getElementById("enable-read-aloud-checkbox");
 
-// Second-model validation and Read aloud only mean anything inside a
-// review session, so they stay disabled (and visually inert) until review
-// mode itself is turned on.
+// Second-model validation, ensemble verification, and Read aloud only mean
+// anything inside a review session, so they stay disabled (and visually
+// inert) until review mode itself is turned on. Second-model validation and
+// ensemble verification are independent opt-ins - either, both, or neither
+// can be on at once.
 reviewModeCheckbox.addEventListener("change", () => {
   autoValidateCheckbox.disabled = !reviewModeCheckbox.checked;
+  ensembleVerifyCheckbox.disabled = !reviewModeCheckbox.checked;
   enableReadAloudCheckbox.disabled = !reviewModeCheckbox.checked;
 });
 
@@ -368,6 +372,9 @@ const verifyPanel = document.getElementById("verify-panel");
 const verifyAgreementLabel = document.getElementById("verify-agreement-label");
 const verifyDiffEl = document.getElementById("verify-diff");
 const verifySuggestionHint = document.getElementById("verify-suggestion-hint");
+const ensemblePanel = document.getElementById("ensemble-panel");
+const ensembleAgreementLabel = document.getElementById("ensemble-agreement-label");
+const ensembleDiffEl = document.getElementById("ensemble-diff");
 const reviewMarkdownEditor = document.querySelector(".markdown-editor");
 const reviewZoomOutBtn = document.getElementById("review-zoom-out-btn");
 const reviewZoomInBtn = document.getElementById("review-zoom-in-btn");
@@ -377,6 +384,7 @@ const reviewZoomLevelEl = document.getElementById("review-zoom-level");
 let reviewSessionId = null;
 let reviewTotalPages = 0;
 let reviewTypos = [];
+let reviewEnsembleSpans = [];
 
 // One shared zoom level for both sides of the comparison (scanned image +
 // editable text) rather than two independent controls, since the point is
@@ -418,15 +426,35 @@ applyReviewZoom();
 // fixing a misspelled word makes its underline disappear the moment the
 // edit no longer matches the original - a natural "you fixed it" signal
 // without any extra bookkeeping. Also shows which paragraph "Read aloud"
-// (below) is currently speaking, in a different colour. Confidence/
+// (below) is currently speaking, in a different colour, and (see
+// ensemble-disagreement below) which spans two independent vision models
+// disagreed on when ensemble verification was on for this page. Confidence/
 // multi-signal flags are deliberately NOT a group here - see
 // renderHighlightedMarkdown's comment for why.
 function updateReviewHighlight() {
   const text = reviewMarkdown.value;
   const stillPresentTypos = reviewTypos.filter((t) => text.includes(t.word));
+  // Only "none"-agreement spans are highlightable at all, and only using
+  // whichever provider's text is first in that span's `providers` object -
+  // see review.py's _run_ensemble_verification for why that's specifically
+  // the text also shown in this textarea for a vision-engine session (and
+  // why, for a classical-engine session, that often won't be found in
+  // `text` at all - the ensemble panel below the editor is what covers
+  // that case, not this overlay).
+  const disagreements = reviewEnsembleSpans.filter((s) => s.agreement === "none");
+  const ensembleSnippets = disagreements
+    .filter((s) => !s.high_divergence)
+    .map((s) => Object.values(s.providers || {})[0])
+    .filter(Boolean);
+  const highDivergenceSnippets = disagreements
+    .filter((s) => s.high_divergence)
+    .map((s) => Object.values(s.providers || {})[0])
+    .filter(Boolean);
   const groups = [
     { snippets: reviewSpeakingSegment ? [reviewSpeakingSegment] : [], className: "speaking" },
     { snippets: stillPresentTypos.map((t) => t.word), className: "typo" },
+    { snippets: ensembleSnippets, className: "ensemble-disagreement" },
+    { snippets: highDivergenceSnippets, className: "ensemble-disagreement-high" },
   ];
   reviewMarkdownHighlight.innerHTML = renderHighlightedMarkdown(text, groups) + "\n";
   hideSpellcheckMenu();  // stale menu could point at a word/position that no longer matches
@@ -594,6 +622,23 @@ function renderWordDiff(segments) {
   }).join("");
 }
 
+// --- Ensemble verification: same diff-rendering idea as renderWordDiff
+// above, adapted to ensemble_verify.diff_ensemble's {text/providers,
+// agreement} span shape instead of word_diff's {tag, a, b} shape - see
+// review.py's "Ensemble verification" section for how a page ends up with
+// this (proactive, session-level opt-in, not this manual per-click check). ---
+function renderEnsembleSpans(spans) {
+  return (spans || []).map((span) => {
+    if (span.agreement === "full") return escapeHtml(span.text);
+    const texts = Object.values(span.providers || {});
+    const cls = span.high_divergence ? "diff-del diff-high-divergence" : "diff-del";
+    let html = "";
+    if (texts[0]) html += `<span class="${cls}">${escapeHtml(texts[0])}</span>`;
+    if (texts[1]) html += `<span class="diff-ins">${escapeHtml(texts[1])}</span>`;
+    return html;
+  }).join("");
+}
+
 reviewVerifyBtn.addEventListener("click", async () => {
   if (!reviewSessionId) return;
   const provider = verifyProviderSelect.value;
@@ -638,6 +683,7 @@ async function startReview(file) {
   if (engine === "vision") formData.append("provider", uploadProviderSelect.value);
   if (categoryInput.value.trim()) formData.append("category", categoryInput.value.trim());
   formData.append("auto_validate", autoValidateCheckbox.checked);
+  formData.append("ensemble_verify", ensembleVerifyCheckbox.checked);
   const keys = currentApiKeys();
   if (keys.anthropic_api_key) formData.append("anthropic_api_key", keys.anthropic_api_key);
   if (keys.openai_api_key) formData.append("openai_api_key", keys.openai_api_key);
@@ -705,22 +751,35 @@ function showReviewPage(page) {
     ? "n/a" : `${page.confidence}%`;
   reviewBadges.innerHTML =
     `Confidence: ${confidenceText}` +
-    (page.needs_review ? ` <span class="badge">Needs review</span>` : "");
+    (page.needs_review ? ` <span class="badge">Needs review</span>` : "") +
+    (page.agreement_pct !== null && page.agreement_pct !== undefined
+      ? ` <span class="badge badge-resumable">Ensemble agreement: ${page.agreement_pct}%</span>` : "");
   reviewImage.src = `data:image/png;base64,${page.image_base64}`;
   reviewMarkdown.value = page.markdown;
   reviewTypos = page.typos || [];
+  reviewEnsembleSpans = page.ensemble_diff || [];
   updateReviewHighlight();
   reviewStatus.textContent = "";
 
   verifyPanel.classList.add("hidden");
   verifyStatus.textContent = "";
   verifySuggestionHint.classList.toggle("hidden", !page.needs_review);
+
+  if (page.ensemble_diff && page.ensemble_diff.length) {
+    ensembleAgreementLabel.textContent =
+      `${page.agreement_pct}% ensemble agreement (2 independent models)`;
+    ensembleDiffEl.innerHTML = renderEnsembleSpans(page.ensemble_diff);
+    ensemblePanel.classList.remove("hidden");
+  } else {
+    ensemblePanel.classList.add("hidden");
+  }
 }
 
 function endReviewSession(message) {
   stopReadAloud();
   reviewPanel.classList.add("hidden");
   verifyPanel.classList.add("hidden");
+  ensemblePanel.classList.add("hidden");
   reviewSessionId = null;
   setReviewControlsEnabled(true);
   document.getElementById("upload-status").textContent = message;

@@ -253,28 +253,9 @@ def test_start_cleans_up_nothing_itself_on_failure_but_does_not_register_session
 
 
 # --- Second-opinion verification (/api/review/{id}/verify) ---
-
-def test_word_diff_reports_full_agreement_for_identical_text():
-    diff = review._word_diff("Hello world", "Hello world")
-    assert diff["agreement_ratio"] == 100.0
-    assert diff["segments"] == [{"tag": "equal", "text": "Hello world"}]
-
-
-def test_word_diff_flags_a_single_changed_word_as_one_segment():
-    diff = review._word_diff("The cat sat", "The dog sat")
-    assert diff["agreement_ratio"] < 100.0
-    tags = [s["tag"] for s in diff["segments"]]
-    assert "replace" in tags
-    replaced = next(s for s in diff["segments"] if s["tag"] == "replace")
-    assert replaced["a"] == "cat"
-    assert replaced["b"] == "dog"
-
-
-def test_word_diff_completely_different_text_has_low_agreement():
-    diff = review._word_diff("Completely different content here", "Nothing at all in common")
-    assert diff["agreement_ratio"] < 60.0
-    assert all(s["tag"] != "equal" for s in diff["segments"] if "text" in s and s["text"].strip())
-
+# (word_diff itself - the shared diff primitive verify_second_opinion and
+# the cross-checks above are built on - now lives in ensemble_verify.py,
+# see test_ensemble_verify.py for its own tests.)
 
 def test_verify_second_opinion_returns_diff_against_pending_page(tmp_path, monkeypatch):
     started = review.start(_session_pdf(tmp_path), "book.pdf", langs="eng+tha")
@@ -545,6 +526,178 @@ def test_multiple_flag_sources_on_the_same_span_are_unioned_without_duplicates(t
     assert page["flagged_snippets"].count("unclear") == 1
     assert len(page["flagged_snippets"]) == len(set(page["flagged_snippets"]))
     assert page["needs_review"] is True
+
+
+# --- Ensemble verification (own opt-in, independent of auto_validate) ---
+
+def test_ensemble_verify_defaults_off_even_with_both_env_keys_configured(tmp_path, monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "fake-anthropic-key")
+    monkeypatch.setenv("OPENAI_API_KEY", "fake-openai-key")
+
+    def fake_pdf_to_markdown_vision(pdf_path, provider=None, model=None, api_key=None):
+        return [{"page_number": 1, "markdown": f"text from {provider}", "confidence": 90.0,
+                  "needs_review": False, "flagged_snippets": []}]
+
+    monkeypatch.setattr(review.convert, "pdf_to_markdown_vision", fake_pdf_to_markdown_vision)
+
+    started = review.start(_session_pdf(tmp_path), "book.pdf", engine="vision",
+                            provider="anthropic", api_key="fake-anthropic-key")  # ensemble_verify omitted
+    page = started["page"]
+
+    assert page["ensemble_diff"] is None
+    assert page["agreement_pct"] is None
+
+
+def test_ensemble_verification_diffs_vision_session_against_the_other_provider(tmp_path, monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "fake-openai-key")
+    calls = []
+
+    def fake_pdf_to_markdown_vision(pdf_path, provider=None, model=None, api_key=None):
+        calls.append(provider)
+        if provider == "openai":
+            return [{"page_number": 1, "markdown": "The cat sat on the mat",
+                      "confidence": 96.0, "needs_review": False, "flagged_snippets": []}]
+        return [{"page_number": 1, "markdown": "The dog sat on the mat",
+                  "confidence": 97.0, "needs_review": False, "flagged_snippets": []}]
+
+    monkeypatch.setattr(review.convert, "pdf_to_markdown_vision", fake_pdf_to_markdown_vision)
+
+    started = review.start(_session_pdf(tmp_path), "book.pdf", engine="vision",
+                            provider="anthropic", api_key="fake-anthropic-key", ensemble_verify=True)
+    page = started["page"]
+
+    # the session's own primary conversion (anthropic) is reused as one
+    # ensemble member - only openai should have been called a second time.
+    assert calls == ["anthropic"] or calls == ["anthropic", "openai"]  # order across threads isn't fixed
+    assert sorted(calls) == ["anthropic", "openai"]
+    assert calls.count("anthropic") == 1  # never called twice for the same page
+
+    assert page["agreement_pct"] is not None and page["agreement_pct"] < 100.0
+    assert any(s["agreement"] == "none" for s in page["ensemble_diff"])
+    disagreement = next(s for s in page["ensemble_diff"] if s["agreement"] == "none")
+    assert disagreement["providers"] == {"anthropic": "dog", "openai": "cat"}
+    assert page["needs_review"] is True
+    assert page["markdown"] == "The dog sat on the mat"  # unaffected - still the primary conversion
+
+
+def test_ensemble_verification_calls_both_providers_fresh_for_classical_engine(tmp_path, monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "fake-anthropic-key")
+    monkeypatch.setenv("OPENAI_API_KEY", "fake-openai-key")
+    calls = []
+
+    def fake_pdf_to_markdown_vision(pdf_path, provider=None, model=None, api_key=None):
+        calls.append(provider)
+        return [{"page_number": 1, "markdown": f"ensemble text from {provider}", "confidence": 90.0,
+                  "needs_review": False, "flagged_snippets": []}]
+
+    monkeypatch.setattr(review.convert, "pdf_to_markdown_vision", fake_pdf_to_markdown_vision)
+
+    # page 2 of the fixture genuinely needs classical OCR (page 1 is
+    # born-digital, confidence 100 - nothing for ensemble mode to check).
+    started = review.start(_session_pdf(tmp_path), "book.pdf", langs="eng+tha", ensemble_verify=True)
+    review.approve(started["session_id"])
+    page = review._sessions[started["session_id"]]["pending"]
+
+    # classical engine never called either provider on its own - both are
+    # genuinely fresh calls here, unlike the vision-engine case above.
+    assert sorted(calls) == ["anthropic", "openai"]
+    assert page["agreement_pct"] is not None
+    assert page["ensemble_diff"] is not None
+
+
+def test_ensemble_verification_skipped_without_required_api_keys(tmp_path, monkeypatch):
+    def fake_pdf_to_markdown_vision(pdf_path, provider=None, model=None, api_key=None):
+        return [{"page_number": 1, "markdown": "text", "confidence": 90.0,
+                  "needs_review": False, "flagged_snippets": []}]
+
+    monkeypatch.setattr(review.convert, "pdf_to_markdown_vision", fake_pdf_to_markdown_vision)
+
+    started = review.start(_session_pdf(tmp_path), "book.pdf", engine="vision",
+                            provider="anthropic", api_key="fake-anthropic-key", ensemble_verify=True)
+    page = started["page"]
+
+    assert page["ensemble_diff"] is None
+    assert page["agreement_pct"] is None
+    assert any("Ensemble verification skipped" in line for line in started["log"])
+
+
+def test_ensemble_verification_skipped_for_native_confidence_100_pages(tmp_path, monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "fake-anthropic-key")
+    monkeypatch.setenv("OPENAI_API_KEY", "fake-openai-key")
+    calls = []
+    monkeypatch.setattr(
+        review.convert, "pdf_to_markdown_vision",
+        lambda *a, **k: calls.append(1) or (_ for _ in ()).throw(AssertionError("should not be called")))
+
+    # page 1 of the fixture is born-digital (confidence 100) - nothing for
+    # ensemble mode (or any other cross-check) to add.
+    started = review.start(_session_pdf(tmp_path), "book.pdf", langs="eng+tha", ensemble_verify=True)
+    page = started["page"]
+
+    assert calls == []
+    assert page["ensemble_diff"] is None
+    assert page["agreement_pct"] is None
+
+
+def test_ensemble_verify_setting_survives_resume(tmp_path, monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "fake-anthropic-key")
+    monkeypatch.setenv("OPENAI_API_KEY", "fake-openai-key")
+
+    def fake_pdf_to_markdown_vision(pdf_path, provider=None, model=None, api_key=None):
+        return [{"page_number": 1, "markdown": f"text from {provider}", "confidence": 90.0,
+                  "needs_review": False, "flagged_snippets": []}]
+
+    monkeypatch.setattr(review.convert, "pdf_to_markdown_vision", fake_pdf_to_markdown_vision)
+
+    started = review.start(_session_pdf(tmp_path), "book.pdf", engine="vision", provider="anthropic",
+                            api_key="fake-anthropic-key", ensemble_verify=True)
+    review.cancel(started["session_id"])
+
+    resumed = review.resume("book.pdf", 3, api_key="fake-anthropic-key")
+
+    assert resumed["page"]["ensemble_diff"] is not None
+    assert resumed["page"]["agreement_pct"] is not None
+    review.cancel(resumed["session_id"])
+
+
+# --- Thai dual-tokenizer divergence on disputed ensemble spans ---
+
+def test_annotate_thai_divergence_flags_highly_diverging_thai_spans(monkeypatch):
+    monkeypatch.setattr(review.spellcheck, "contains_thai", lambda text: True)
+    monkeypatch.setattr(review.spellcheck, "tokenizer_divergence", lambda text: 40.0)  # below threshold
+
+    spans = [{"providers": {"anthropic": "บาง คำ", "openai": "อีก คำ"}, "agreement": "none"}]
+    review._annotate_thai_divergence(spans)
+
+    assert spans[0]["high_divergence"] is True
+
+
+def test_annotate_thai_divergence_leaves_low_divergence_spans_unflagged(monkeypatch):
+    monkeypatch.setattr(review.spellcheck, "contains_thai", lambda text: True)
+    monkeypatch.setattr(review.spellcheck, "tokenizer_divergence", lambda text: 95.0)  # well above threshold
+
+    spans = [{"providers": {"anthropic": "text", "openai": "text2"}, "agreement": "none"}]
+    review._annotate_thai_divergence(spans)
+
+    assert "high_divergence" not in spans[0]
+
+
+def test_annotate_thai_divergence_skips_non_thai_spans(monkeypatch):
+    called = []
+    monkeypatch.setattr(review.spellcheck, "contains_thai", lambda text: False)
+    monkeypatch.setattr(review.spellcheck, "tokenizer_divergence", lambda text: called.append(1) or 0.0)
+
+    spans = [{"providers": {"anthropic": "English text", "openai": "Other text"}, "agreement": "none"}]
+    review._annotate_thai_divergence(spans)
+
+    assert called == []  # never even computed for non-Thai text
+    assert "high_divergence" not in spans[0]
+
+
+def test_annotate_thai_divergence_skips_full_agreement_spans():
+    spans = [{"text": "agreed text", "agreement": "full"}]
+    review._annotate_thai_divergence(spans)  # must not raise - no "providers" key on this span
+    assert "high_divergence" not in spans[0]
 
 
 def test_cross_checks_run_concurrently_not_sequentially(monkeypatch):

@@ -264,6 +264,46 @@ two would break the overlay's alignment with the real text.
   in `index.html`, sent as the `auto_validate` form field to `POST /api/review/start`) is the
   per-upload opt-in; it's disabled/unchecked until **Review each page before saving** itself
   is checked, since it only means anything inside a review session.
+- **Ensemble verification** (`webapp/backend/ensemble_verify.py` + `review._run_ensemble_verification`,
+  review flow only, own opt-in independent of `auto_validate` above - a reviewer can turn on
+  either, both, or neither) — a proactive generalisation of the always-available manual
+  "Verify with second model" button: for every page below 100% confidence in a session that
+  opted in (`ensemble_verify=True`), both ensemble providers (`anthropic`, `openai`)
+  transcribe the page independently up front, and their word-level disagreement spans (see
+  `ensemble_verify.diff_ensemble`, built on `ensemble_verify.word_diff` - the same
+  word-tokenize-then-difflib primitive `verify_second_opinion` and the multi-signal
+  cross-checks above already used, moved here as the one shared implementation) become the
+  primary review signal for that page, instead of a human manually triggering a one-off
+  check. To avoid a redundant duplicate call, a vision-engine session reuses its own
+  already-converted markdown as one of the two ensemble members (only the *other* provider is
+  called fresh) - a classical-engine session has called neither, so both are fresh, which is
+  where the "2x cost/latency" framing in the checkbox label comes from
+  (`#ensemble-verify-checkbox`, same disabled-until-review-mode-on treatment as the other two
+  checkboxes). Keys resolve from the backend's own environment only, same rule
+  `_cross_provider_disagreement_flags` already follows, and the same
+  `_run_cross_checks_with_timeout` bounded-concurrency budget bounds it - both providers
+  missing a key, or either call failing/timing out, just skips ensemble verification for that
+  page (logged, never a reason to fail it). A disagreement span is itself grounds for
+  `needs_review`, same principle as the other cross-checks. `ensemble_diff`/`agreement_pct`
+  are response-only fields (like `flagged_snippets`/`typos`/`image_base64` above - see
+  `db.insert_chunks()`'s docstring for exactly which chunk fields actually get persisted, and
+  none of these are it), shown live during review and discarded once the page is approved -
+  there's no existing JSON blob in the `documents` schema to persist them into, and adding a
+  DB column for something that's only ever useful *during* the decision a human is about to
+  make (unlike `markdown`/`confidence`/`needs_review`, which describe the saved result itself)
+  wasn't worth it. Rendered two ways: a dedicated panel below the editor (always accurate,
+  shows both providers' actual disagreeing text, reusing the same diff-del/diff-ins styling
+  "Verify with second model" already uses) and, best-effort, a third highlight-overlay `<mark>`
+  class (alongside the existing "speaking"/"typo" groups) directly in the editable text -
+  which only lines up for a vision-engine session, since a classical-engine session's ensemble
+  diff compares two vision outputs neither of which is the Tesseract text actually shown (the
+  panel is what covers that case; the UI says so). A disagreement span containing Thai text
+  additionally gets a second, independent "is this genuinely garbled" signal
+  (`spellcheck.tokenizer_divergence` - agreement between pythainlp's "newmm" and "longest"
+  tokenizations of that span; low agreement below `_TOKENIZER_DIVERGENCE_THRESHOLD` sets
+  `high_divergence: true`) and renders with a stronger colour/weight in both the overlay and
+  the panel, on the same "advisory heuristic, not derived from calibration data" footing as
+  `_LOGPROB_FLAG_THRESHOLD`.
 - **Real `.jpg` image storage** — images/handwriting/uncertain regions are saved as actual
   files (not base64) in reading order, deduped by content hash. (This replaced an earlier
   base64-embedded approach after explicit feedback that files-on-disk were preferable.)
@@ -433,7 +473,7 @@ correct from passing tests alone.
 
 ## Current state
 
-**293 tests pass** (48 in `pdf_to_docx_pipeline`, 245 in `webapp`), covering: the SQLite/FTS5
+**316 tests pass** (48 in `pdf_to_docx_pipeline`, 268 in `webapp`), covering: the SQLite/FTS5
 layer and duplicate-page dedup, per-page/per-character-budget chunking and image handling,
 category suggestion with graceful no-key fallback, the book compiler's retrieval and error
 handling for both providers (plus its copy-paste/text/flow/video-script modes - which system
@@ -443,8 +483,14 @@ image generation (no-key error, prompt building, no dedup across repeated calls)
 assembly (real, non-mocked `ffmpeg`/`ffprobe` verifying an actual playable vertical mp4 comes
 out the other end - only the model/image-API/Azure calls feeding it are mocked, same
 mock-the-billed-call-run-the-real-local-tool split as Tesseract/PyMuPDF elsewhere in this
-repo), the review session state machine (including recovery from a failed page conversion
-and the second-opinion word-diff), Thai spell-checking, server-side TTS (voice selection,
+repo), `ensemble_verify.py`'s word-diff/pairwise-diff primitives (full agreement, a single-word
+disagreement, a reordering, empty/single-provider input) and its provider-calling wrapper, the
+review session state machine (including recovery from a failed page conversion, the
+second-opinion word-diff, and ensemble verification - vision-engine sessions reusing their own
+primary conversion vs. classical sessions calling both providers fresh, the missing-key and
+native-confidence-100 skip paths, the setting surviving resume, and the Thai
+divergence-annotation helper in isolation), Thai spell-checking (including the dual-tokenizer
+divergence check), server-side TTS (voice selection,
 caching, the token-fetch + synthesize call chain, the `/api/tts` and `/audio/{filename}`
 endpoints — all against a mocked Azure client, no billed calls in CI), the multi-signal
 flagging union (each of the four signals firing/not-firing independently, gated correctly by
@@ -493,7 +539,11 @@ Search**: each page in a book's expanded "View pages" list can now be corrected 
 (`PUT /api/documents/{id}`), including clearing its "Needs review" flag, without redoing the
 original page-by-page review → **`deploy.sh --no-tunnel`**: runs the same local setup
 (system deps, venv, restart uvicorn) without opening a Cloudflare tunnel, for local-only
-testing that isn't exposed to tunnel connectivity issues at all.
+testing that isn't exposed to tunnel connectivity issues at all → **ensemble verification**:
+a proactive, opt-in generalisation of "Verify with second model" - every page needing
+OCR/vision in a session that turned it on gets transcribed independently by both providers up
+front, with disagreement spans (plus a Thai dual-tokenizer divergence signal on top) as the
+primary review signal, instead of a human manually triggering a one-off check per page.
 
 **Known limitations:**
 
@@ -553,6 +603,22 @@ testing that isn't exposed to tunnel connectivity issues at all.
     across a whole book felt like a cost surprise worth a separate, explicit decision
     rather than folding in silently. Bulk-uploaded pages still get the original per-line
     confidence flag, just not the three cross-checks.
+- **Ensemble verification's inline highlight only lines up with the visible text for a
+  vision-engine session.** A classical-engine session's ensemble check compares two *fresh*
+  vision-LLM transcriptions against each other - neither is the Tesseract text actually shown
+  in the editor - so most or all of that page's disagreement spans simply won't be found in
+  the textarea to highlight (harmless no-op, same graceful degradation `flagged_snippets`
+  already relies on for a stale span). The dedicated panel below the editor always shows the
+  real comparison regardless of engine; only the inline overlay is affected.
+- **Ensemble verification, like the other cross-checks, resolves both providers' keys from
+  the backend's own environment only** - there's no mechanism for a reviewer to hand a session
+  a second (or, for a classical-engine page, two) provider's key mid-review. Missing either
+  needed key silently skips ensemble verification for that page rather than blocking it.
+- **The Thai dual-tokenizer divergence threshold (`_TOKENIZER_DIVERGENCE_THRESHOLD = 70.0`) is
+  a reasonable-seeming cutoff, not derived from calibration data** - same caveat
+  `_LOGPROB_FLAG_THRESHOLD` above already carries. It only ever adds emphasis
+  (`high_divergence: true`) to a span the two providers already disagreed on; it never flags
+  anything on its own.
 - Thai spell-check is a dictionary lookup, not language understanding — proper nouns, slang,
   and loanwords absent from the dictionary get flagged like typos too. Advisory only, never
   blocks approval.

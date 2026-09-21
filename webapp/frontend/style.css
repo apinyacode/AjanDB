@@ -624,6 +624,23 @@ mark {
   cursor: pointer;
 }
 
+/* Ensemble verification (see review.py's ensemble_verify.py) - a third
+   highlight group alongside .speaking/.typo above, for spans where the
+   two independently-run vision-LLM providers disagreed. Only lines up
+   with the visible textarea text for a vision-engine session (see
+   #ensemble-panel's hint in index.html) - a classical-engine session's
+   ensemble check compares two fresh vision calls against each other,
+   neither of which is the Tesseract text on screen, so nothing here
+   matches and the dedicated panel below the editor is the only place
+   that comparison shows up. */
+.markdown-highlight mark.ensemble-disagreement {
+  background: #f5a623;
+}
+
+.markdown-highlight mark.ensemble-disagreement-high {
+  background: #d9534f;
+}
+
 .spellcheck-menu {
   position: fixed;
   z-index: 100;
@@ -702,4 +719,9 @@ mark {
   text-decoration: none;
   border-radius: 2px;
   padding: 0 0.1rem;
+}
+
+.diff-high-divergence {
+  font-weight: 700;
+  outline: 1px solid var(--danger);
 }

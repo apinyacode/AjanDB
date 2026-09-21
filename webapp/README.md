@@ -17,9 +17,14 @@ searchable markdown, and compiling a book from whatever matches a topic.
   confidence against a second model/engine (plus an on-demand manual check, always available
   regardless of the toggle) and sets a "Needs review" badge — it doesn't paint the flagged
   text itself anymore, since that stopped being useful once a page had more than a couple of
-  disagreements. Toggleable server-side read-aloud (Azure Speech) on top — see
-  [`../CONTEXT.md`](../CONTEXT.md)'s "Multi-signal 'likely wrong' flagging" and "Thai
-  spell-check".
+  disagreements. Optional **Verify with model ensemble** goes further: every page needing
+  OCR/vision is transcribed independently by both providers up front, with their disagreement
+  spans (highlighted in the editor where they line up with what's shown, always shown in a
+  dedicated comparison panel either way) as the primary review signal, instead of a one-off
+  manual check per page — 2x the cost/latency of a scanned page, since it's two full
+  transcriptions instead of one. Toggleable server-side read-aloud (Azure Speech) on top — see
+  [`../CONTEXT.md`](../CONTEXT.md)'s "Multi-signal 'likely wrong' flagging", "Ensemble
+  verification", and "Thai spell-check".
 - **Data Search** — full-text search (SQLite FTS5) plus a book browser with per-book
   `.md` export, delete, a manual "ready for publish" flag, free-form **labels** (publish
   date, media type, content, author/publisher, or any custom key you add), **View/Export

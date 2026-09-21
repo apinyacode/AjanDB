@@ -87,6 +87,12 @@
     </div>
     <div class="row engine-row">
       <label class="checkbox-label">
+        <input type="checkbox" id="ensemble-verify-checkbox" disabled>
+        Verify with model ensemble (2x cost/latency per scanned page)
+      </label>
+    </div>
+    <div class="row engine-row">
+      <label class="checkbox-label">
         <input type="checkbox" id="enable-read-aloud-checkbox" checked disabled>
         Enable Read aloud (needs an Azure Speech key)
       </label>
@@ -148,6 +154,18 @@
           <strong id="verify-agreement-label"></strong>
         </div>
         <pre id="verify-diff" class="markdown-preview"></pre>
+      </div>
+      <div id="ensemble-panel" class="verify-panel hidden">
+        <div class="chunk-meta">
+          <strong id="ensemble-agreement-label"></strong>
+        </div>
+        <pre id="ensemble-diff" class="markdown-preview"></pre>
+        <p class="hint small">
+          Highlighted in the editor above too, where the disagreeing text is still part of what's
+          shown there - a page whose ensemble check compared two vision models neither of which
+          produced the classical-OCR text on screen won't have anything to highlight there, but
+          the comparison above still applies.
+        </p>
       </div>
       <div class="row">
         <button id="review-approve-btn">Approve &amp; Save</button>

@@ -36,45 +36,17 @@ State machine per session:
 """
 import base64
 import concurrent.futures
-import difflib
 import os
-import re
 import shutil
 import tempfile
 import threading
 import time
 import uuid
 
-from . import categorize, convert, db, originals, sources, spellcheck
+from . import categorize, convert, db, ensemble_verify, originals, sources, spellcheck
 
 _sessions: dict[str, dict] = {}
 _lock = threading.Lock()
-
-_WORD_TOKEN_RE = re.compile(r"\S+|\s+")
-
-
-def _word_diff(a: str, b: str) -> dict:
-    """Word-level diff between two transcriptions of the same page - lets a
-    human see exactly which words two models disagree on, instead of
-    trusting either one's own (unreliable, self-reported for a vision-LLM)
-    confidence score alone. Tokenizes on whitespace boundaries rather than
-    characters, so a single retyped word shows as one change, not a
-    scattering of single-character ones.
-
-    Returns {"segments": [...], "agreement_ratio": 0-100}. Each segment is
-    {"tag": "equal", "text": ...} where both versions agree, or
-    {"tag": "replace"|"delete"|"insert", "a": ..., "b": ...} where they
-    differ ("a" is the first text, "b" the second)."""
-    a_tokens = _WORD_TOKEN_RE.findall(a)
-    b_tokens = _WORD_TOKEN_RE.findall(b)
-    matcher = difflib.SequenceMatcher(None, a_tokens, b_tokens, autojunk=False)
-    segments = []
-    for tag, i1, i2, j1, j2 in matcher.get_opcodes():
-        if tag == "equal":
-            segments.append({"tag": "equal", "text": "".join(a_tokens[i1:i2])})
-        else:
-            segments.append({"tag": tag, "a": "".join(a_tokens[i1:i2]), "b": "".join(b_tokens[j1:j2])})
-    return {"segments": segments, "agreement_ratio": round(matcher.ratio() * 100, 1)}
 
 
 def _log(session: dict, message: str):
@@ -119,9 +91,10 @@ def _dedup_flags(snippets: list[str]) -> list[str]:
 
 
 def _diff_flags(a: str, b: str) -> list[str]:
-    """Runs _word_diff(a, b) and returns just the disagreeing spans from
-    `a`'s side, stripped - the shared core of every cross-check below."""
-    diff = _word_diff(a, b)
+    """Runs ensemble_verify.word_diff(a, b) and returns just the
+    disagreeing spans from `a`'s side, stripped - the shared core of every
+    cross-check below."""
+    diff = ensemble_verify.word_diff(a, b)
     return [seg["a"].strip() for seg in diff["segments"]
             if seg["tag"] != "equal" and seg.get("a", "").strip()]
 
@@ -251,13 +224,16 @@ def _openai_logprob_flags(png_bytes: bytes, model: str, api_key: str) -> list[st
 _CROSS_CHECK_TIMEOUT_SECONDS = 20
 
 
-def _run_cross_checks_with_timeout(jobs: list) -> list[list[str]]:
+def _run_cross_checks_with_timeout(jobs: list) -> list:
     """Runs every zero-arg callable in `jobs` in its own thread, all started
     at once, and collects results within a single shared
     _CROSS_CHECK_TIMEOUT_SECONDS budget total (not per job) - so queuing up
     more cross-checks never multiplies how long a reviewer waits. A job
-    that raises or doesn't finish in time contributes no flags rather than
-    failing the whole page."""
+    that raises or doesn't finish in time contributes `[]` rather than
+    failing the whole page - generic over what each job actually returns
+    (a list of flagged spans for the checks below, or a (provider,
+    markdown) tuple for _run_ensemble_verification), since the caller
+    already knows what shape to expect from its own jobs."""
     if not jobs:
         return []
     pool = concurrent.futures.ThreadPoolExecutor(max_workers=len(jobs))
@@ -277,6 +253,99 @@ def _run_cross_checks_with_timeout(jobs: list) -> list[list[str]]:
         # here would defeat the entire point of the timeout above.
         pool.shutdown(wait=False)
     return results
+
+
+_ENSEMBLE_API_KEY_ENV_VAR = {"anthropic": "ANTHROPIC_API_KEY", "openai": "OPENAI_API_KEY"}
+
+# Below this word-tokenization agreement between pythainlp's "newmm" and
+# "longest" engines, a Thai disagreement span is additionally marked
+# high_divergence - a second, independent signal (alongside the two
+# providers disagreeing at all) that the span is genuinely garbled, not
+# just a stylistic difference. Like _LOGPROB_FLAG_THRESHOLD above, a
+# reasonable "clearly diverging" cutoff, not derived from calibration data.
+_TOKENIZER_DIVERGENCE_THRESHOLD = 70.0
+
+
+def _annotate_thai_divergence(spans: list[dict]) -> None:
+    """Mutates `spans` (see ensemble_verify.diff_ensemble) in place, adding
+    high_divergence=True to any Thai disagreement span whose two pythainlp
+    tokenizations diverge sharply (see spellcheck.tokenizer_divergence) -
+    the frontend renders these with a distinct, more attention-grabbing
+    style than an ordinary ensemble disagreement (see style.css)."""
+    for span in spans:
+        if span["agreement"] != "none":
+            continue
+        text = next(iter(span["providers"].values()), "")
+        if spellcheck.contains_thai(text) and spellcheck.tokenizer_divergence(text) < _TOKENIZER_DIVERGENCE_THRESHOLD:
+            span["high_divergence"] = True
+
+
+def _run_ensemble_verification(session: dict, page_index: int, chunk: dict) -> dict | None:
+    """Transcribes this page independently with both ensemble providers
+    (see ensemble_verify.py) and diffs them against each other - unlike
+    _cross_provider_disagreement_flags above (a single extra call against
+    whichever provider *wasn't* already used, diffed against the primary
+    conversion), this is a full two-model ensemble: when the session's own
+    primary engine is already a vision provider in the ensemble, that
+    provider's already-converted markdown is reused as one of the two
+    ensemble members (avoiding a redundant duplicate call to it), and only
+    the *other* provider is called fresh; for a classical-engine session,
+    neither ensemble provider has been called at all yet, so both are
+    called fresh - hence the frontend's "2x cost/latency" framing, which is
+    exactly true for a vision-engine session and a full two fresh calls for
+    a classical one.
+
+    Resolves API keys from the backend's own environment only (same "no
+    mechanism for a reviewer to hand this session a second provider's key
+    mid-review" rule _cross_provider_disagreement_flags already follows) -
+    returns None (logged, not an error) if a needed key isn't configured,
+    or if a call fails/times out, never a reason to fail or delay the page
+    itself. Uses the same bounded-concurrency timeout as the other
+    API-calling cross-checks (see _CROSS_CHECK_TIMEOUT_SECONDS). Each
+    concurrent call re-extracts its own single-page copy of the PDF (same
+    reasoning as _cross_provider_disagreement_flags above: `_convert_one_page`'s
+    own tmp_pdf is already deleted by the time cross-checks run, and two
+    threads each doing their own extract+cleanup is simpler than sharing
+    one file across them)."""
+    outputs = {}
+    to_call = list(ensemble_verify.DEFAULT_ENSEMBLE_PROVIDERS)
+    if session["engine"] == "vision" and session["provider"] in ensemble_verify.DEFAULT_ENSEMBLE_PROVIDERS:
+        outputs[session["provider"]] = chunk["markdown"]
+        to_call = [p for p in ensemble_verify.DEFAULT_ENSEMBLE_PROVIDERS if p != session["provider"]]
+
+    missing_keys = [p for p in to_call if not os.environ.get(_ENSEMBLE_API_KEY_ENV_VAR[p])]
+    if missing_keys:
+        _log(session, f"Ensemble verification skipped - missing API key(s) for: {', '.join(missing_keys)}")
+        return None
+
+    def _call(provider):
+        try:
+            api_key = os.environ.get(_ENSEMBLE_API_KEY_ENV_VAR[provider])
+            tmp_pdf = convert.extract_single_page_pdf(session["pdf_path"], page_index)
+            try:
+                result = ensemble_verify.convert_page_ensemble(tmp_pdf, providers=(provider,),
+                                                                 api_keys={provider: api_key})
+            finally:
+                os.unlink(tmp_pdf)
+            return provider, result[provider]
+        except Exception as e:
+            _log(session, f"Ensemble verification against {provider} skipped: {e}")
+            return None
+
+    jobs = [(lambda p=p: _call(p)) for p in to_call]
+    for result in _run_cross_checks_with_timeout(jobs):
+        if result:
+            provider, markdown = result
+            outputs[provider] = markdown
+
+    if len(outputs) < 2:
+        _log(session, "Ensemble verification skipped - a provider call failed, timed out, or was skipped")
+        return None
+
+    diff = ensemble_verify.diff_ensemble(outputs)
+    _annotate_thai_divergence(diff["spans"])
+    _log(session, f"Ensemble verification agreement: {diff['agreement_pct']}%")
+    return diff
 
 
 def _convert_one_page(session: dict, page_index: int) -> dict:
@@ -306,7 +375,8 @@ def _convert_one_page(session: dict, page_index: int) -> dict:
     chunk = chunks[0]  # exactly one page in -> exactly one chunk out
 
     extra_flags = []
-    if session["auto_validate"] and chunk["confidence"] is not None and chunk["confidence"] < 100:
+    needs_ocr_or_vision = chunk["confidence"] is not None and chunk["confidence"] < 100
+    if session["auto_validate"] and needs_ocr_or_vision:
         jobs = [lambda: _cross_provider_disagreement_flags(session, page_index, chunk)]
         if session["engine"] == "vision":
             extra_flags += _tesseract_cross_check_flags(png_bytes, chunk["markdown"], session["langs"])
@@ -315,15 +385,29 @@ def _convert_one_page(session: dict, page_index: int) -> dict:
         for flags in _run_cross_checks_with_timeout(jobs):
             extra_flags += flags
 
+    # Ensemble verification (own opt-in, separate from auto_validate above)
+    # - see _run_ensemble_verification's docstring for why it's kept as its
+    # own field/mechanism rather than folded into flagged_snippets: the two
+    # ensemble outputs aren't always substrings of `chunk["markdown"]`
+    # (a classical-engine page's ensemble diffs two fresh vision calls
+    # against each other, neither of which is the Tesseract text shown),
+    # so this isn't always highlightable the same way flagged_snippets is.
+    ensemble_diff = None
+    if session["ensemble_verify"] and needs_ocr_or_vision:
+        ensemble_diff = _run_ensemble_verification(session, page_index, chunk)
+    has_ensemble_disagreement = ensemble_diff is not None and any(
+        s["agreement"] == "none" for s in ensemble_diff["spans"])
+
     flagged_snippets = _dedup_flags(chunk.get("flagged_snippets", []) + extra_flags)
 
     return {
         "page_number": page_index + 1,
         "markdown": chunk["markdown"],
         "confidence": chunk["confidence"],
-        # a disagreement from any cross-check above is itself grounds for
-        # review, even on a page whose own confidence score was high.
-        "needs_review": chunk["needs_review"] or bool(extra_flags),
+        # a disagreement from any cross-check (or the ensemble check) above
+        # is itself grounds for review, even on a page whose own confidence
+        # score was high.
+        "needs_review": chunk["needs_review"] or bool(extra_flags) or has_ensemble_disagreement,
         # exact substrings of `markdown` that dragged confidence below 100,
         # or that a cross-check above disagreed on - the frontend highlights
         # them so a human reviewing the page knows exactly what to check
@@ -334,12 +418,17 @@ def _convert_one_page(session: dict, page_index: int) -> dict:
         # confidence flags above (see spellcheck.py).
         "typos": spellcheck.find_thai_typos(chunk["markdown"]),
         "image_base64": base64.b64encode(png_bytes).decode("ascii"),
+        # None unless ensemble_verify was on for this session AND this page
+        # needed OCR/vision AND both provider calls actually succeeded -
+        # see ensemble_verify.diff_ensemble for the span shape.
+        "ensemble_diff": ensemble_diff["spans"] if ensemble_diff else None,
+        "agreement_pct": ensemble_diff["agreement_pct"] if ensemble_diff else None,
     }
 
 
 def start(pdf_path: str, filename: str, engine: str = "classical", provider: str = None,
           model: str = None, langs: str = None, category: str = None,
-          api_key: str = None, auto_validate: bool = False) -> dict:
+          api_key: str = None, auto_validate: bool = False, ensemble_verify: bool = False) -> dict:
     """Begins a review session for `pdf_path` (already saved to a temp file
     by the caller - this module takes ownership of it and deletes it when
     the session ends, is cancelled, or this call fails). Converts and
@@ -352,7 +441,16 @@ def start(pdf_path: str, filename: str, engine: str = "classical", provider: str
     because those checks cost extra API calls and - even bounded and run
     concurrently (see _run_cross_checks_with_timeout) - add real latency to
     every low-confidence page; a reviewer who wants that tradeoff opts in
-    per upload via the frontend's "Second-model validation" checkbox."""
+    per upload via the frontend's "Second-model validation" checkbox.
+
+    `ensemble_verify` (also off by default, independent of auto_validate -
+    a reviewer can turn on either, both, or neither) turns on proactive
+    ensemble verification (see ensemble_verify.py and this module's
+    _run_ensemble_verification) for every page below 100% confidence in
+    this session: both vision-LLM providers transcribe it independently,
+    and their disagreement spans become the primary review signal for that
+    page, instead of a human having to manually trigger "Verify with
+    second model" one page at a time."""
     total_pages = convert.get_pdf_page_count(pdf_path)
     if total_pages < 1:
         raise ValueError(f"{filename} has no pages")
@@ -368,6 +466,7 @@ def start(pdf_path: str, filename: str, engine: str = "classical", provider: str
         "langs": langs,
         "api_key": api_key,
         "auto_validate": bool(auto_validate),
+        "ensemble_verify": bool(ensemble_verify),
         "category": (category or "").strip() or None,
         "total_pages": total_pages,
         "current_index": None,
@@ -378,6 +477,8 @@ def start(pdf_path: str, filename: str, engine: str = "classical", provider: str
     _log(session, f"Started: {filename} ({total_pages} page(s), engine={engine})")
     if auto_validate:
         _log(session, "Second-model validation: on")
+    if ensemble_verify:
+        _log(session, "Ensemble verification: on")
     _log(session, f"Converting page 1/{total_pages}...")
 
     try:
@@ -407,6 +508,7 @@ def _resume_settings(session: dict, next_index: int) -> dict:
         "langs": session["langs"],
         "category": session["category"],
         "auto_validate": session["auto_validate"],
+        "ensemble_verify": session["ensemble_verify"],
         "next_index": next_index,
     }
 
@@ -546,7 +648,7 @@ def verify_second_opinion(session_id: str, provider: str = None, model: str = No
         os.unlink(tmp_pdf)
 
     second_markdown = chunks[0]["markdown"]
-    diff = _word_diff(pending["markdown"], second_markdown)
+    diff = ensemble_verify.word_diff(pending["markdown"], second_markdown)
     _log(session, f"Verification agreement: {diff['agreement_ratio']}%")
     return {
         "provider": provider or "anthropic",
@@ -617,6 +719,7 @@ def resume(source_filename: str, total_pages: int, api_key: str = None) -> dict:
         "langs": settings.get("langs"),
         "api_key": api_key,
         "auto_validate": bool(settings.get("auto_validate", False)),
+        "ensemble_verify": bool(settings.get("ensemble_verify", False)),
         "category": settings.get("category"),
         "total_pages": total_pages,
         "current_index": None,
