@@ -30,7 +30,7 @@ def test_word_diff_completely_different_text_has_low_agreement():
 def test_convert_page_ensemble_calls_each_provider_and_returns_its_markdown(monkeypatch):
     calls = []
 
-    def fake_pdf_to_markdown_vision(pdf_path, provider=None, model=None, api_key=None):
+    def fake_pdf_to_markdown_vision(pdf_path, provider=None, model=None, api_key=None, dpi=200):
         calls.append((provider, api_key))
         return [{"page_number": 1, "markdown": f"text from {provider}", "confidence": 90.0,
                   "needs_review": False, "flagged_snippets": []}]
@@ -48,7 +48,7 @@ def test_convert_page_ensemble_calls_each_provider_and_returns_its_markdown(monk
 def test_convert_page_ensemble_falls_back_to_none_key_when_not_supplied(monkeypatch):
     seen_keys = {}
 
-    def fake_pdf_to_markdown_vision(pdf_path, provider=None, model=None, api_key=None):
+    def fake_pdf_to_markdown_vision(pdf_path, provider=None, model=None, api_key=None, dpi=200):
         seen_keys[provider] = api_key
         return [{"page_number": 1, "markdown": "text", "confidence": 90.0,
                   "needs_review": False, "flagged_snippets": []}]
@@ -58,6 +58,36 @@ def test_convert_page_ensemble_falls_back_to_none_key_when_not_supplied(monkeypa
     ensemble_verify.convert_page_ensemble("fake.pdf", providers=("anthropic",))
 
     assert seen_keys == {"anthropic": None}
+
+
+def test_convert_page_ensemble_passes_dpi_through_to_every_provider(monkeypatch):
+    seen_dpis = {}
+
+    def fake_pdf_to_markdown_vision(pdf_path, provider=None, model=None, api_key=None, dpi=200):
+        seen_dpis[provider] = dpi
+        return [{"page_number": 1, "markdown": "text", "confidence": 90.0,
+                  "needs_review": False, "flagged_snippets": []}]
+
+    monkeypatch.setattr(ensemble_verify.convert, "pdf_to_markdown_vision", fake_pdf_to_markdown_vision)
+
+    ensemble_verify.convert_page_ensemble("fake.pdf", providers=("anthropic", "openai"), dpi=450)
+
+    assert seen_dpis == {"anthropic": 450, "openai": 450}
+
+
+def test_convert_page_ensemble_defaults_dpi_when_not_given(monkeypatch):
+    seen_dpis = {}
+
+    def fake_pdf_to_markdown_vision(pdf_path, provider=None, model=None, api_key=None, dpi=200):
+        seen_dpis[provider] = dpi
+        return [{"page_number": 1, "markdown": "text", "confidence": 90.0,
+                  "needs_review": False, "flagged_snippets": []}]
+
+    monkeypatch.setattr(ensemble_verify.convert, "pdf_to_markdown_vision", fake_pdf_to_markdown_vision)
+
+    ensemble_verify.convert_page_ensemble("fake.pdf", providers=("anthropic",))
+
+    assert seen_dpis == {"anthropic": ensemble_verify.convert.VISION_DPI_DEFAULT}
 
 
 # --- diff_ensemble ---

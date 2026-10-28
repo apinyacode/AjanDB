@@ -127,7 +127,7 @@ def _upload_log(job_id: str, message: str):
 def _run_upload_job(job_id: str, tmp_path: str, filename: str, ext: str,
                      engine: str, provider: str | None, model: str | None,
                      category: str | None, anthropic_api_key: str | None,
-                     openai_api_key: str | None):
+                     openai_api_key: str | None, dpi: int):
     vision_key = _resolve_client_key(provider, anthropic_api_key, openai_api_key)
     _upload_log(job_id, f"Starting: {filename} (engine={engine}, provider={provider or 'default'})")
 
@@ -137,7 +137,7 @@ def _run_upload_job(job_id: str, tmp_path: str, filename: str, ext: str,
     try:
         chunks = convert.convert_to_markdown(
             tmp_path, filename, engine=engine, provider=provider, model=model,
-            api_key=vision_key, progress=_progress)
+            api_key=vision_key, dpi=dpi, progress=_progress)
         originals.save(tmp_path, filename, len(chunks))
     except ValueError as e:
         _upload_log(job_id, f"ERROR: {e}")
@@ -197,6 +197,7 @@ async def upload(
     category: str | None = Form(None),
     anthropic_api_key: str | None = Form(None),
     openai_api_key: str | None = Form(None),
+    dpi: int = Form(convert.VISION_DPI_DEFAULT),
 ):
     """`engine`="vision" routes scanned PDF pages through a per-page LLM call
     (`provider`: "anthropic" or "openai") instead of local Tesseract - see
@@ -205,6 +206,14 @@ async def upload(
     stored only in the browser, never persisted server-side) or set as
     ANTHROPIC_API_KEY/OPENAI_API_KEY in the backend's environment; neither
     is the same as a claude.ai/ChatGPT Plus subscription.
+
+    `dpi` only matters for the vision engine - the resolution of the page
+    image actually sent to the model (see convert.pdf_to_markdown_vision);
+    denser/smaller handwriting can benefit from a value higher than the
+    default. Validated (and, if out of range, rejected) inside
+    convert.convert_to_markdown, same as an unknown `engine` already is -
+    surfaces as a job error, not a request-time 400, since this runs in the
+    background.
 
     `category` is optional - leave it blank to have it auto-suggested from
     the converted content using whichever key is available (falls back to
@@ -226,7 +235,7 @@ async def upload(
     threading.Thread(
         target=_run_upload_job,
         args=(job_id, tmp_path, file.filename, ext, engine, provider, model,
-              category, anthropic_api_key, openai_api_key),
+              category, anthropic_api_key, openai_api_key, dpi),
         daemon=True,
     ).start()
 
@@ -272,13 +281,19 @@ async def review_start(
     openai_api_key: str | None = Form(None),
     auto_validate: bool = Form(False),
     ensemble_verify: bool = Form(False),
+    dpi: int = Form(convert.VISION_DPI_DEFAULT),
 ):
     """Starts a page-by-page review session: converts and returns page 1
     immediately, alongside a rendered preview image, so the frontend can
     show scan-vs-markdown side by side and let a human approve (optionally
     after editing) or skip each page before it's saved - see
     backend/review.py for the full flow. PDF only; other file types have no
-    OCR step for a human to check page-by-page."""
+    OCR step for a human to check page-by-page.
+
+    `dpi` only matters for the vision engine - see convert.pdf_to_markdown_vision
+    and convert.VISION_DPI_MIN/MAX for the valid range and what it trades
+    off; an out-of-range value raises the same ValueError->400 path as an
+    unknown `engine`."""
     ext = os.path.splitext(file.filename or "")[1].lower()
     if ext != ".pdf":
         raise HTTPException(400, "Page-by-page review is only supported for PDFs")
@@ -295,7 +310,7 @@ async def review_start(
         return review.start(
             tmp_path, file.filename, engine=engine, provider=provider, model=model,
             langs=langs, category=category, api_key=api_key, auto_validate=auto_validate,
-            ensemble_verify=ensemble_verify)
+            ensemble_verify=ensemble_verify, dpi=dpi)
     except ValueError as e:
         os.unlink(tmp_path)
         raise HTTPException(400, str(e))

@@ -7,7 +7,9 @@ searchable markdown, and compiling a book from whatever matches a topic.
 
 - **Data Store** — upload `.pdf`/`.docx`/`.txt`/`.md`. PDFs go through
   `../pdf_to_docx_pipeline` with a choice of engine (free local OCR, or a per-page
-  vision-LLM call for messy scans/non-Latin scripts).
+  vision-LLM call for messy scans/non-Latin scripts). The vision engine's page-image
+  resolution (**Image DPI**, 100-600, default 200) is user-configurable — worth raising for
+  small or dense handwriting, at the cost of a larger image (and more tokens) per page.
 - **Page-by-page review** (optional, PDF only) — approve or edit each page's converted
   text before it's saved. The scanned page and the editable text both size to fit your
   screen by default, and a shared **Zoom** control (50%-250%) magnifies both together for

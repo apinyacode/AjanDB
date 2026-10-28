@@ -262,7 +262,7 @@ def test_verify_second_opinion_returns_diff_against_pending_page(tmp_path, monke
     session_id = started["session_id"]
     original_markdown = started["page"]["markdown"]
 
-    def fake_pdf_to_markdown_vision(pdf_path, provider=None, model=None, api_key=None):
+    def fake_pdf_to_markdown_vision(pdf_path, provider=None, model=None, api_key=None, dpi=200):
         return [{"page_number": 1, "markdown": original_markdown.replace("Notes", "NOTES"),
                   "confidence": 90.0, "needs_review": False, "flagged_snippets": []}]
 
@@ -321,7 +321,7 @@ def test_auto_validate_defaults_off_even_with_an_environment_key_configured(tmp_
     an env key that would otherwise satisfy them is present."""
     monkeypatch.setenv("OPENAI_API_KEY", "fake-openai-key")
 
-    def fake_pdf_to_markdown_vision(pdf_path, provider=None, model=None, api_key=None):
+    def fake_pdf_to_markdown_vision(pdf_path, provider=None, model=None, api_key=None, dpi=200):
         if provider == "openai":
             return [{"page_number": 1, "markdown": "The cat sat on the mat",
                       "confidence": 96.0, "needs_review": False, "flagged_snippets": []}]
@@ -341,7 +341,7 @@ def test_auto_validate_defaults_off_even_with_an_environment_key_configured(tmp_
 def test_auto_cross_check_flags_disagreement_even_with_high_self_reported_confidence(tmp_path, monkeypatch):
     monkeypatch.setenv("OPENAI_API_KEY", "fake-openai-key")
 
-    def fake_pdf_to_markdown_vision(pdf_path, provider=None, model=None, api_key=None):
+    def fake_pdf_to_markdown_vision(pdf_path, provider=None, model=None, api_key=None, dpi=200):
         if provider == "openai":
             return [{"page_number": 1, "markdown": "The cat sat on the mat",
                       "confidence": 96.0, "needs_review": False, "flagged_snippets": []}]
@@ -371,7 +371,7 @@ def test_auto_cross_check_is_silently_skipped_without_an_environment_key(tmp_pat
             "pictures": [], "processed": None,
         })
 
-    def fake_pdf_to_markdown_vision(pdf_path, provider=None, model=None, api_key=None):
+    def fake_pdf_to_markdown_vision(pdf_path, provider=None, model=None, api_key=None, dpi=200):
         return [{"page_number": 1, "markdown": "Some transcribed text",
                   "confidence": 90.0, "needs_review": False, "flagged_snippets": []}]
 
@@ -395,7 +395,7 @@ def test_tesseract_cross_check_flags_disagreement_for_vision_engine_pages(tmp_pa
             "pictures": [], "processed": None,
         })
 
-    def fake_pdf_to_markdown_vision(pdf_path, provider=None, model=None, api_key=None):
+    def fake_pdf_to_markdown_vision(pdf_path, provider=None, model=None, api_key=None, dpi=200):
         return [{"page_number": 1, "markdown": "vision model transcription here",
                   "confidence": 92.0, "needs_review": False, "flagged_snippets": []}]
 
@@ -453,7 +453,7 @@ def test_openai_logprob_check_flags_low_confidence_span(tmp_path, monkeypatch):
 
     monkeypatch.setattr(vision_ocr, "extract_page_with_vision_logprobs", fake_extract_logprobs)
 
-    def fake_pdf_to_markdown_vision(pdf_path, provider=None, model=None, api_key=None):
+    def fake_pdf_to_markdown_vision(pdf_path, provider=None, model=None, api_key=None, dpi=200):
         return [{"page_number": 1, "markdown": "some garbled region of text",
                   "confidence": 88.0, "needs_review": False, "flagged_snippets": []}]
 
@@ -482,7 +482,7 @@ def test_openai_logprob_check_does_not_run_for_anthropic_provider(tmp_path, monk
         vision_ocr, "extract_page_with_vision_logprobs",
         lambda *a, **k: calls.append(1) or (_ for _ in ()).throw(AssertionError("should not be called")))
 
-    def fake_pdf_to_markdown_vision(pdf_path, provider=None, model=None, api_key=None):
+    def fake_pdf_to_markdown_vision(pdf_path, provider=None, model=None, api_key=None, dpi=200):
         return [{"page_number": 1, "markdown": "vision model transcription here",
                   "confidence": 92.0, "needs_review": False, "flagged_snippets": []}]
 
@@ -506,7 +506,7 @@ def test_multiple_flag_sources_on_the_same_span_are_unioned_without_duplicates(t
             "pictures": [], "processed": None,
         })
 
-    def fake_pdf_to_markdown_vision(pdf_path, provider=None, model=None, api_key=None):
+    def fake_pdf_to_markdown_vision(pdf_path, provider=None, model=None, api_key=None, dpi=200):
         if provider == "openai":
             return [{"page_number": 1, "markdown": "shaky text over here",
                       "confidence": 95.0, "needs_review": False, "flagged_snippets": []}]
@@ -534,7 +534,7 @@ def test_ensemble_verify_defaults_off_even_with_both_env_keys_configured(tmp_pat
     monkeypatch.setenv("ANTHROPIC_API_KEY", "fake-anthropic-key")
     monkeypatch.setenv("OPENAI_API_KEY", "fake-openai-key")
 
-    def fake_pdf_to_markdown_vision(pdf_path, provider=None, model=None, api_key=None):
+    def fake_pdf_to_markdown_vision(pdf_path, provider=None, model=None, api_key=None, dpi=200):
         return [{"page_number": 1, "markdown": f"text from {provider}", "confidence": 90.0,
                   "needs_review": False, "flagged_snippets": []}]
 
@@ -552,7 +552,7 @@ def test_ensemble_verification_diffs_vision_session_against_the_other_provider(t
     monkeypatch.setenv("OPENAI_API_KEY", "fake-openai-key")
     calls = []
 
-    def fake_pdf_to_markdown_vision(pdf_path, provider=None, model=None, api_key=None):
+    def fake_pdf_to_markdown_vision(pdf_path, provider=None, model=None, api_key=None, dpi=200):
         calls.append(provider)
         if provider == "openai":
             return [{"page_number": 1, "markdown": "The cat sat on the mat",
@@ -585,7 +585,7 @@ def test_ensemble_verification_calls_both_providers_fresh_for_classical_engine(t
     monkeypatch.setenv("OPENAI_API_KEY", "fake-openai-key")
     calls = []
 
-    def fake_pdf_to_markdown_vision(pdf_path, provider=None, model=None, api_key=None):
+    def fake_pdf_to_markdown_vision(pdf_path, provider=None, model=None, api_key=None, dpi=200):
         calls.append(provider)
         return [{"page_number": 1, "markdown": f"ensemble text from {provider}", "confidence": 90.0,
                   "needs_review": False, "flagged_snippets": []}]
@@ -606,7 +606,7 @@ def test_ensemble_verification_calls_both_providers_fresh_for_classical_engine(t
 
 
 def test_ensemble_verification_skipped_without_required_api_keys(tmp_path, monkeypatch):
-    def fake_pdf_to_markdown_vision(pdf_path, provider=None, model=None, api_key=None):
+    def fake_pdf_to_markdown_vision(pdf_path, provider=None, model=None, api_key=None, dpi=200):
         return [{"page_number": 1, "markdown": "text", "confidence": 90.0,
                   "needs_review": False, "flagged_snippets": []}]
 
@@ -643,7 +643,7 @@ def test_ensemble_verify_setting_survives_resume(tmp_path, monkeypatch):
     monkeypatch.setenv("ANTHROPIC_API_KEY", "fake-anthropic-key")
     monkeypatch.setenv("OPENAI_API_KEY", "fake-openai-key")
 
-    def fake_pdf_to_markdown_vision(pdf_path, provider=None, model=None, api_key=None):
+    def fake_pdf_to_markdown_vision(pdf_path, provider=None, model=None, api_key=None, dpi=200):
         return [{"page_number": 1, "markdown": f"text from {provider}", "confidence": 90.0,
                   "needs_review": False, "flagged_snippets": []}]
 
@@ -657,7 +657,71 @@ def test_ensemble_verify_setting_survives_resume(tmp_path, monkeypatch):
 
     assert resumed["page"]["ensemble_diff"] is not None
     assert resumed["page"]["agreement_pct"] is not None
-    review.cancel(resumed["session_id"])
+
+
+# --- dpi (vision-engine render resolution) ---
+
+def test_start_rejects_out_of_range_dpi_for_vision_engine(tmp_path, monkeypatch):
+    monkeypatch.setattr(review.convert, "pdf_to_markdown_vision",
+                         lambda *a, **k: (_ for _ in ()).throw(AssertionError("should not be called")))
+    with pytest.raises(ValueError):
+        review.start(_session_pdf(tmp_path), "book.pdf", engine="vision",
+                     provider="anthropic", api_key="fake-anthropic-key", dpi=99)
+
+
+def test_start_ignores_out_of_range_dpi_for_classical_engine(tmp_path):
+    # dpi only means anything for the vision engine - a classical-engine
+    # session shouldn't reject on account of an irrelevant dpi value.
+    result = review.start(_session_pdf(tmp_path), "book.pdf", langs="eng+tha", dpi=99)
+    assert result["page"]["page_number"] == 1
+
+
+def test_start_passes_dpi_through_to_vision_conversion(tmp_path, monkeypatch):
+    captured = []
+
+    def fake_pdf_to_markdown_vision(pdf_path, provider=None, model=None, api_key=None, dpi=200):
+        captured.append(dpi)
+        return [{"page_number": 1, "markdown": "vision text", "confidence": 90.0,
+                  "needs_review": False, "flagged_snippets": []}]
+
+    monkeypatch.setattr(review.convert, "pdf_to_markdown_vision", fake_pdf_to_markdown_vision)
+    review.start(_session_pdf(tmp_path), "book.pdf", engine="vision",
+                 provider="anthropic", api_key="fake-anthropic-key", dpi=350)
+
+    assert captured == [350]
+
+
+def test_start_logs_a_non_default_dpi(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        review.convert, "pdf_to_markdown_vision",
+        lambda *a, **k: [{"page_number": 1, "markdown": "vision text", "confidence": 90.0,
+                           "needs_review": False, "flagged_snippets": []}])
+
+    default_result = review.start(_session_pdf(tmp_path), "book.pdf", engine="vision",
+                                   provider="anthropic", api_key="fake-anthropic-key")
+    assert not any("Vision DPI" in line for line in default_result["log"])
+
+    custom_result = review.start(_session_pdf(tmp_path), "book2.pdf", engine="vision",
+                                  provider="anthropic", api_key="fake-anthropic-key", dpi=400)
+    assert any("Vision DPI: 400" in line for line in custom_result["log"])
+
+
+def test_dpi_setting_survives_resume(tmp_path, monkeypatch):
+    captured = []
+
+    def fake_pdf_to_markdown_vision(pdf_path, provider=None, model=None, api_key=None, dpi=200):
+        captured.append(dpi)
+        return [{"page_number": 1, "markdown": "vision text", "confidence": 90.0,
+                  "needs_review": False, "flagged_snippets": []}]
+
+    monkeypatch.setattr(review.convert, "pdf_to_markdown_vision", fake_pdf_to_markdown_vision)
+    started = review.start(_session_pdf(tmp_path), "book.pdf", engine="vision",
+                            provider="anthropic", api_key="fake-anthropic-key", dpi=400)
+    review.cancel(started["session_id"])
+
+    review.resume("book.pdf", 3, api_key="fake-anthropic-key")
+
+    assert captured == [400, 400]  # original start, then resume - same dpi both times
 
 
 # --- Thai dual-tokenizer divergence on disputed ensemble spans ---
@@ -792,7 +856,7 @@ def test_resume_continues_from_the_last_reached_page(tmp_path):
 def test_resume_preserves_the_original_engine_and_provider(tmp_path, monkeypatch):
     captured_providers = []
 
-    def fake_pdf_to_markdown_vision(pdf_path, provider=None, model=None, api_key=None):
+    def fake_pdf_to_markdown_vision(pdf_path, provider=None, model=None, api_key=None, dpi=200):
         captured_providers.append(provider)
         return [{"page_number": 1, "markdown": "vision text", "confidence": 90.0,
                   "needs_review": False, "flagged_snippets": []}]

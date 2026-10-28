@@ -142,7 +142,7 @@ def test_upload_vision_engine_succeeds_with_browser_supplied_key(tmp_path, monke
 
     captured = {}
 
-    def fake_pdf_to_markdown_vision(pdf_path, provider=None, model=None, api_key=None, progress=None):
+    def fake_pdf_to_markdown_vision(pdf_path, provider=None, model=None, api_key=None, dpi=200, progress=None):
         captured["api_key"] = api_key
         return [{"page_number": 1, "markdown": "vision text", "confidence": 90.0, "needs_review": False}]
 
@@ -184,6 +184,59 @@ def test_upload_pdf_with_vision_engine_returns_503_without_api_key(tmp_path, mon
         )
     assert resp.status_code == 503
     assert "ANTHROPIC_API_KEY" in resp.json()["detail"]
+
+
+def test_upload_pdf_with_vision_engine_passes_dpi_through(tmp_path, monkeypatch):
+    client = _client(tmp_path, monkeypatch)
+    captured = {}
+
+    def fake_pdf_to_markdown_vision(pdf_path, provider=None, model=None, api_key=None, dpi=200, progress=None):
+        captured["dpi"] = dpi
+        return [{"page_number": 1, "markdown": "vision text", "confidence": 90.0, "needs_review": False}]
+
+    monkeypatch.setattr(main_module.convert, "pdf_to_markdown_vision", fake_pdf_to_markdown_vision)
+
+    import pymupdf as fitz
+    pdf_path = tmp_path / "blank.pdf"
+    doc = fitz.open()
+    doc.new_page()
+    doc.save(str(pdf_path))
+    doc.close()
+
+    with open(pdf_path, "rb") as f:
+        resp = _upload_and_wait(
+            client,
+            files={"file": ("blank.pdf", f, "application/pdf")},
+            data={"engine": "vision", "anthropic_api_key": "browser-key-123", "dpi": "500"},
+        )
+    assert resp.status_code == 200
+    assert captured["dpi"] == 500
+
+
+def test_upload_pdf_with_vision_engine_reports_out_of_range_dpi_as_a_job_error(tmp_path, monkeypatch):
+    # /api/upload accepts the request immediately (status is checked via
+    # a background job - see _upload_and_wait's docstring), so an
+    # out-of-range dpi can't be a request-time 400 the way it is for
+    # /api/review/start: the conversion runs after the initial response
+    # already went out, and the error only surfaces once the job polls as
+    # failed (see _run_upload_job's ValueError branch, code=400).
+    client = _client(tmp_path, monkeypatch)
+
+    import pymupdf as fitz
+    pdf_path = tmp_path / "blank.pdf"
+    doc = fitz.open()
+    doc.new_page()
+    doc.save(str(pdf_path))
+    doc.close()
+
+    with open(pdf_path, "rb") as f:
+        resp = _upload_and_wait(
+            client,
+            files={"file": ("blank.pdf", f, "application/pdf")},
+            data={"engine": "vision", "anthropic_api_key": "browser-key-123", "dpi": "99"},
+        )
+    assert resp.status_code == 400
+    assert "dpi" in resp.json()["detail"]
 
 
 def test_get_document_404_for_missing_id(tmp_path, monkeypatch):
@@ -555,6 +608,35 @@ def test_review_start_passes_ensemble_verify_through_to_review_start(tmp_path, m
     client.post(f"/api/review/{resp2.json()['session_id']}/cancel")
 
 
+def test_review_start_passes_dpi_through_to_review_start(tmp_path, monkeypatch):
+    client = _client(tmp_path, monkeypatch)
+    captured = {}
+    real_start = main_module.review.start
+
+    def spy_start(*args, **kwargs):
+        captured["dpi"] = kwargs.get("dpi")
+        return real_start(*args, **kwargs)
+
+    monkeypatch.setattr(main_module.review, "start", spy_start)
+
+    resp = _start_review(client, dpi="400")
+    assert resp.status_code == 200, resp.text
+    assert captured["dpi"] == 400
+    client.post(f"/api/review/{resp.json()['session_id']}/cancel")
+
+    resp2 = _start_review(client)  # omitted entirely -> backend default
+    assert resp2.status_code == 200, resp2.text
+    assert captured["dpi"] == main_module.convert.VISION_DPI_DEFAULT
+    client.post(f"/api/review/{resp2.json()['session_id']}/cancel")
+
+
+def test_review_start_rejects_out_of_range_dpi(tmp_path, monkeypatch):
+    client = _client(tmp_path, monkeypatch)
+    resp = _start_review(client, engine="vision", provider="anthropic",
+                          anthropic_api_key="fake-key", dpi="99")
+    assert resp.status_code == 400
+
+
 def test_review_start_returns_first_page_and_saves_nothing(tmp_path, monkeypatch):
     client = _client(tmp_path, monkeypatch)
     resp = _start_review(client)
@@ -654,7 +736,7 @@ def test_verify_returns_diff_and_agreement_ratio(tmp_path, monkeypatch):
     session_id = started["session_id"]
     original_markdown = started["page"]["markdown"]
 
-    def fake_pdf_to_markdown_vision(pdf_path, provider=None, model=None, api_key=None):
+    def fake_pdf_to_markdown_vision(pdf_path, provider=None, model=None, api_key=None, dpi=200):
         return [{"page_number": 1, "markdown": original_markdown.replace("Notes", "NOTES"),
                   "confidence": 88.0, "needs_review": False, "flagged_snippets": []}]
 
@@ -678,7 +760,7 @@ def test_verify_uses_matching_provider_api_key(tmp_path, monkeypatch):
 
     captured = {}
 
-    def fake_pdf_to_markdown_vision(pdf_path, provider=None, model=None, api_key=None):
+    def fake_pdf_to_markdown_vision(pdf_path, provider=None, model=None, api_key=None, dpi=200):
         captured["api_key"] = api_key
         return [{"page_number": 1, "markdown": "second opinion text", "confidence": 90.0,
                   "needs_review": False, "flagged_snippets": []}]

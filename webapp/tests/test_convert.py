@@ -59,6 +59,39 @@ def test_convert_to_markdown_rejects_unknown_engine_for_pdf(tmp_path):
         convert.convert_to_markdown(str(p), "note.pdf", engine="bogus")
 
 
+def test_convert_to_markdown_rejects_out_of_range_dpi_for_vision_engine(tmp_path):
+    p = tmp_path / "note.pdf"
+    p.write_bytes(b"%PDF-1.4 fake")
+    with pytest.raises(ValueError):
+        convert.convert_to_markdown(str(p), "note.pdf", engine="vision", dpi=99)
+    with pytest.raises(ValueError):
+        convert.convert_to_markdown(str(p), "note.pdf", engine="vision", dpi=601)
+
+
+def test_convert_to_markdown_passes_dpi_through_to_vision_conversion(tmp_path, monkeypatch):
+    captured = []
+
+    def fake_pdf_to_markdown_vision(pdf_path, provider=None, model=None, api_key=None,
+                                     dpi=convert.VISION_DPI_DEFAULT, progress=None):
+        captured.append(dpi)
+        return []
+
+    monkeypatch.setattr(convert, "pdf_to_markdown_vision", fake_pdf_to_markdown_vision)
+    p = tmp_path / "note.pdf"
+    p.write_bytes(b"%PDF-1.4 fake")
+    convert.convert_to_markdown(str(p), "note.pdf", engine="vision", dpi=400)
+    assert captured == [400]
+
+
+def test_convert_to_markdown_dpi_out_of_range_does_not_apply_to_classical_engine(tmp_path, monkeypatch):
+    # dpi validation is vision-only - a classical-engine upload shouldn't
+    # care what (irrelevant) dpi value happens to be sitting in the form.
+    monkeypatch.setattr(convert, "pdf_to_markdown", lambda pdf_path, langs=None, progress=None: [])
+    p = tmp_path / "note.pdf"
+    p.write_bytes(b"%PDF-1.4 fake")
+    convert.convert_to_markdown(str(p), "note.pdf", engine="classical", dpi=99)
+
+
 def test_items_to_chunks_strips_control_characters():
     items = [
         {"kind": "heading", "page": 0},

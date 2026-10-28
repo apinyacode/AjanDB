@@ -121,7 +121,8 @@ def _cross_provider_disagreement_flags(session: dict, page_index: int, chunk: di
 
     tmp_pdf = convert.extract_single_page_pdf(session["pdf_path"], page_index)
     try:
-        second_chunks = convert.pdf_to_markdown_vision(tmp_pdf, provider=cross_provider, api_key=api_key)
+        second_chunks = convert.pdf_to_markdown_vision(
+            tmp_pdf, provider=cross_provider, api_key=api_key, dpi=session["dpi"])
     except Exception as e:
         _log(session, f"Automatic cross-check against {cross_provider} skipped: {e}")
         return []
@@ -324,7 +325,8 @@ def _run_ensemble_verification(session: dict, page_index: int, chunk: dict) -> d
             tmp_pdf = convert.extract_single_page_pdf(session["pdf_path"], page_index)
             try:
                 result = ensemble_verify.convert_page_ensemble(tmp_pdf, providers=(provider,),
-                                                                 api_keys={provider: api_key})
+                                                                 api_keys={provider: api_key},
+                                                                 dpi=session["dpi"])
             finally:
                 os.unlink(tmp_pdf)
             return provider, result[provider]
@@ -366,7 +368,7 @@ def _convert_one_page(session: dict, page_index: int) -> dict:
         if session["engine"] == "vision":
             chunks = convert.pdf_to_markdown_vision(
                 tmp_pdf, provider=session["provider"], model=session["model"],
-                api_key=session["api_key"])
+                api_key=session["api_key"], dpi=session["dpi"])
         else:
             chunks = convert.pdf_to_markdown(tmp_pdf, langs=session["langs"])
     finally:
@@ -427,8 +429,9 @@ def _convert_one_page(session: dict, page_index: int) -> dict:
 
 
 def start(pdf_path: str, filename: str, engine: str = "classical", provider: str = None,
-          model: str = None, langs: str = None, category: str = None,
-          api_key: str = None, auto_validate: bool = False, ensemble_verify: bool = False) -> dict:
+          model: str = None, langs: str = None, category: str = None, api_key: str = None,
+          auto_validate: bool = False, ensemble_verify: bool = False,
+          dpi: int = convert.VISION_DPI_DEFAULT) -> dict:
     """Begins a review session for `pdf_path` (already saved to a temp file
     by the caller - this module takes ownership of it and deletes it when
     the session ends, is cancelled, or this call fails). Converts and
@@ -450,10 +453,22 @@ def start(pdf_path: str, filename: str, engine: str = "classical", provider: str
     this session: both vision-LLM providers transcribe it independently,
     and their disagreement spans become the primary review signal for that
     page, instead of a human having to manually trigger "Verify with
-    second model" one page at a time."""
+    second model" one page at a time.
+
+    `dpi` only matters for engine="vision" - the resolution of the page
+    image sent to the model for every vision call this session makes
+    (primary conversion, the auto cross-provider check, ensemble
+    verification, and a manual "Verify with second model") - see
+    convert.pdf_to_markdown_vision and convert.VISION_DPI_MIN/MAX for the
+    valid range. A session-level setting, not per-page, since there's no
+    reason one page of the same scan would need a different resolution
+    than another."""
     total_pages = convert.get_pdf_page_count(pdf_path)
     if total_pages < 1:
         raise ValueError(f"{filename} has no pages")
+    if engine == "vision" and not (convert.VISION_DPI_MIN <= dpi <= convert.VISION_DPI_MAX):
+        raise ValueError(
+            f"dpi must be between {convert.VISION_DPI_MIN} and {convert.VISION_DPI_MAX}, got {dpi}")
 
     session_id = uuid.uuid4().hex
     session = {
@@ -467,6 +482,7 @@ def start(pdf_path: str, filename: str, engine: str = "classical", provider: str
         "api_key": api_key,
         "auto_validate": bool(auto_validate),
         "ensemble_verify": bool(ensemble_verify),
+        "dpi": dpi,
         "category": (category or "").strip() or None,
         "total_pages": total_pages,
         "current_index": None,
@@ -479,6 +495,8 @@ def start(pdf_path: str, filename: str, engine: str = "classical", provider: str
         _log(session, "Second-model validation: on")
     if ensemble_verify:
         _log(session, "Ensemble verification: on")
+    if engine == "vision" and dpi != convert.VISION_DPI_DEFAULT:
+        _log(session, f"Vision DPI: {dpi}")
     _log(session, f"Converting page 1/{total_pages}...")
 
     try:
@@ -509,6 +527,7 @@ def _resume_settings(session: dict, next_index: int) -> dict:
         "category": session["category"],
         "auto_validate": session["auto_validate"],
         "ensemble_verify": session["ensemble_verify"],
+        "dpi": session["dpi"],
         "next_index": next_index,
     }
 
@@ -640,7 +659,8 @@ def verify_second_opinion(session_id: str, provider: str = None, model: str = No
                   f"against {provider or 'anthropic'}...")
     tmp_pdf = convert.extract_single_page_pdf(session["pdf_path"], session["current_index"])
     try:
-        chunks = convert.pdf_to_markdown_vision(tmp_pdf, provider=provider, model=model, api_key=api_key)
+        chunks = convert.pdf_to_markdown_vision(
+            tmp_pdf, provider=provider, model=model, api_key=api_key, dpi=session["dpi"])
     except Exception as e:
         _log(session, f"ERROR verifying page {pending['page_number']}: {e}")
         raise
@@ -720,6 +740,7 @@ def resume(source_filename: str, total_pages: int, api_key: str = None) -> dict:
         "api_key": api_key,
         "auto_validate": bool(settings.get("auto_validate", False)),
         "ensemble_verify": bool(settings.get("ensemble_verify", False)),
+        "dpi": settings.get("dpi", convert.VISION_DPI_DEFAULT),
         "category": settings.get("category"),
         "total_pages": total_pages,
         "current_index": None,

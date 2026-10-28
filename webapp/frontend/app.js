@@ -87,8 +87,10 @@ tabButtons.forEach((btn) => {
 
 const engineSelect = document.getElementById("engine-select");
 const uploadProviderSelect = document.getElementById("upload-provider-select");
+const uploadDpiInput = document.getElementById("upload-dpi-input");
 engineSelect.addEventListener("change", () => {
   uploadProviderSelect.disabled = engineSelect.value !== "vision";
+  uploadDpiInput.disabled = engineSelect.value !== "vision";
 });
 
 const reviewModeCheckbox = document.getElementById("review-mode-checkbox");
@@ -132,7 +134,10 @@ document.getElementById("upload-btn").addEventListener("click", async () => {
   const formData = new FormData();
   formData.append("file", input.files[0]);
   formData.append("engine", engine);
-  if (engine === "vision") formData.append("provider", uploadProviderSelect.value);
+  if (engine === "vision") {
+    formData.append("provider", uploadProviderSelect.value);
+    formData.append("dpi", uploadDpiInput.value);
+  }
   if (categoryInput.value.trim()) formData.append("category", categoryInput.value.trim());
   const keys = currentApiKeys();
   if (keys.anthropic_api_key) formData.append("anthropic_api_key", keys.anthropic_api_key);
@@ -680,7 +685,10 @@ async function startReview(file) {
   const formData = new FormData();
   formData.append("file", file);
   formData.append("engine", engine);
-  if (engine === "vision") formData.append("provider", uploadProviderSelect.value);
+  if (engine === "vision") {
+    formData.append("provider", uploadProviderSelect.value);
+    formData.append("dpi", uploadDpiInput.value);
+  }
   if (categoryInput.value.trim()) formData.append("category", categoryInput.value.trim());
   formData.append("auto_validate", autoValidateCheckbox.checked);
   formData.append("ensemble_verify", ensembleVerifyCheckbox.checked);

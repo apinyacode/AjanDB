@@ -58,6 +58,14 @@ CONFIDENCE_REVIEW_THRESHOLD = 75.0
 # a page of prose, not to hit any hard limit.
 PLAIN_TEXT_CHUNK_CHARS = 3000
 
+# Valid range for the vision engine's `dpi` option (see pdf_to_markdown_vision)
+# - below 100 renders text too small to be worth sending to the model at
+# all; above 600 balloons the per-page image payload (and token cost) for
+# a resolution no current vision-LLM meaningfully benefits from.
+VISION_DPI_MIN = 100
+VISION_DPI_MAX = 600
+VISION_DPI_DEFAULT = 200
+
 # Same class of artifact pipeline.assemble strips before writing .docx (stray
 # control characters, e.g. from a font missing a glyph during PDF text
 # extraction) - needs stripping here too since this is a second consumer of
@@ -244,7 +252,7 @@ def pdf_to_markdown(pdf_path: str, langs: str = None, progress=None) -> list[dic
 
 
 def pdf_to_markdown_vision(pdf_path: str, provider: str = None, model: str = None,
-                            api_key: str = None, progress=None) -> list[dict]:
+                            api_key: str = None, dpi: int = VISION_DPI_DEFAULT, progress=None) -> list[dict]:
     """Same as pdf_to_markdown, but scanned pages go through a vision-LLM
     (Claude or GPT-4o, see pipeline/vision_ocr.py) instead of local
     Tesseract - better at messy real-world scans and non-Latin scripts, at
@@ -253,10 +261,14 @@ def pdf_to_markdown_vision(pdf_path: str, provider: str = None, model: str = Non
     only) or via ANTHROPIC_API_KEY/OPENAI_API_KEY in the backend's
     environment. Confidence per chunk is the model's own self-reported
     estimate, not a calibrated metric like Tesseract's - treat it as a rough
-    signal. `progress`, if given, is called as progress(page_number,
+    signal. `dpi` controls the resolution of the page image actually sent to
+    the model (independent of render_page_preview's fixed 150 DPI on-screen
+    preview) - denser/smaller handwriting can benefit from a higher value
+    than the 200 default at the cost of a larger image payload per call.
+    `progress`, if given, is called as progress(page_number,
     total_pages) (0-indexed) as each page starts processing."""
     doc_items, _ = build_doc_items_vision(
-        pdf_path, provider=provider, model=model, api_key=api_key, progress=progress)
+        pdf_path, provider=provider, model=model, api_key=api_key, dpi=dpi, progress=progress)
     return items_to_chunks(doc_items)
 
 
@@ -274,20 +286,24 @@ def text_to_markdown(text_path: str) -> list[dict]:
 
 
 def convert_to_markdown(file_path: str, filename: str, engine: str = "classical",
-                         provider: str = None, model: str = None,
-                         api_key: str = None, progress=None) -> list[dict]:
+                         provider: str = None, model: str = None, api_key: str = None,
+                         dpi: int = VISION_DPI_DEFAULT, progress=None) -> list[dict]:
     """`engine`: "classical" (default, free, local Tesseract) or "vision"
     (per-page LLM call via `provider`/`model`/`api_key` - see
-    pdf_to_markdown_vision). Only affects PDFs; other file types have
-    nothing to digitise. `progress`, if given, is called as
+    pdf_to_markdown_vision). `dpi` only applies to the vision engine -
+    see pdf_to_markdown_vision - and must fall within
+    [VISION_DPI_MIN, VISION_DPI_MAX]. Only affects PDFs; other file types
+    have nothing to digitise. `progress`, if given, is called as
     progress(page_number, total_pages) per PDF page (ignored for other file
     types, which have no per-page OCR step to report on). Returns a list of
     chunk dicts, each no bigger than roughly one page."""
     ext = os.path.splitext(filename)[1].lower()
     if ext == ".pdf":
         if engine == "vision":
+            if not (VISION_DPI_MIN <= dpi <= VISION_DPI_MAX):
+                raise ValueError(f"dpi must be between {VISION_DPI_MIN} and {VISION_DPI_MAX}, got {dpi}")
             return pdf_to_markdown_vision(
-                file_path, provider=provider, model=model, api_key=api_key, progress=progress)
+                file_path, provider=provider, model=model, api_key=api_key, dpi=dpi, progress=progress)
         if engine != "classical":
             raise ValueError(f"Unknown conversion engine {engine!r} - expected 'classical' or 'vision'")
         return pdf_to_markdown(file_path, progress=progress)

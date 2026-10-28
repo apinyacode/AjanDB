@@ -304,6 +304,30 @@ two would break the overlay's alignment with the real text.
   `high_divergence: true`) and renders with a stronger colour/weight in both the overlay and
   the panel, on the same "advisory heuristic, not derived from calibration data" footing as
   `_LOGPROB_FLAG_THRESHOLD`.
+- **Configurable vision render DPI** (`convert.VISION_DPI_MIN/MAX/DEFAULT` = 100/600/200,
+  threaded through `convert.pdf_to_markdown_vision`/`convert_to_markdown`,
+  `review.start`/`resume`, and `ensemble_verify.convert_page_ensemble`) — the resolution of
+  the page image actually sent to the vision-LLM for OCR, independent of
+  `render_page_preview`'s fixed 150 DPI on-screen preview. Added after a real handwritten
+  Thai scan produced poor transcription at the previously-hardcoded 200 DPI default; small or
+  dense handwriting benefits from a higher value at the cost of a larger image payload (and
+  more tokens) per page. Session-level, not per-page — one scan's pages don't need different
+  resolutions from each other. Exposed as a number input (`#upload-dpi-input`, 100–600 step
+  50) next to the vision provider select in `index.html`, enabled/disabled in lockstep with
+  it (`#engine-select`'s change handler), sent as the `dpi` form field on both the bulk-upload
+  and `POST /api/review/start` requests; defaults to 200 when omitted, matching the prior
+  hardcoded behaviour exactly. An out-of-range value raises `ValueError` — a request-time 400
+  from `/api/review/start` (synchronous), or a job error from `/api/upload` (background job,
+  so the bad value can only surface once the job itself runs). A non-default dpi used by a
+  review session is logged (`"Vision DPI: <n>"`) so it's visible in the session's own log
+  alongside the "Second-model validation"/"Ensemble verification" on/off lines, and it's
+  carried through `sources.save`/`sources.update`'s resume settings exactly like
+  `auto_validate`/`ensemble_verify`, so a resumed session reuses the same dpi the original
+  session started with rather than silently reverting to 200. Every vision call a session
+  makes — the primary conversion, the auto cross-provider check, ensemble verification, and a
+  manual "Verify with second model" — uses the one dpi the session was started with, so a
+  disagreement between two calls reflects an actual transcription disagreement rather than a
+  resolution mismatch.
 - **Real `.jpg` image storage** — images/handwriting/uncertain regions are saved as actual
   files (not base64) in reading order, deduped by content hash. (This replaced an earlier
   base64-embedded approach after explicit feedback that files-on-disk were preferable.)
@@ -473,7 +497,7 @@ correct from passing tests alone.
 
 ## Current state
 
-**316 tests pass** (48 in `pdf_to_docx_pipeline`, 268 in `webapp`), covering: the SQLite/FTS5
+**330 tests pass** (48 in `pdf_to_docx_pipeline`, 282 in `webapp`), covering: the SQLite/FTS5
 layer and duplicate-page dedup, per-page/per-character-budget chunking and image handling,
 category suggestion with graceful no-key fallback, the book compiler's retrieval and error
 handling for both providers (plus its copy-paste/text/flow/video-script modes - which system
@@ -543,7 +567,10 @@ testing that isn't exposed to tunnel connectivity issues at all → **ensemble v
 a proactive, opt-in generalisation of "Verify with second model" - every page needing
 OCR/vision in a session that turned it on gets transcribed independently by both providers up
 front, with disagreement spans (plus a Thai dual-tokenizer divergence signal on top) as the
-primary review signal, instead of a human manually triggering a one-off check per page.
+primary review signal, instead of a human manually triggering a one-off check per page →
+**configurable vision render DPI**: the page-image resolution sent to the vision-LLM, exposed
+as a user setting (100–600, default 200) after a real handwritten Thai scan OCR'd poorly at
+the previously-hardcoded default.
 
 **Known limitations:**
 

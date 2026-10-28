@@ -58,7 +58,8 @@ def word_diff(a: str, b: str) -> dict:
 
 
 def convert_page_ensemble(pdf_path: str, providers: tuple[str, ...] = DEFAULT_ENSEMBLE_PROVIDERS,
-                           api_keys: dict[str, str] | None = None) -> dict[str, str]:
+                           api_keys: dict[str, str] | None = None,
+                           dpi: int = convert.VISION_DPI_DEFAULT) -> dict[str, str]:
     """Transcribes the single-page PDF at `pdf_path` independently with
     each provider in `providers`, returning {provider: markdown}. Reuses
     convert.pdf_to_markdown_vision (which itself wraps vision_ocr.py's
@@ -73,13 +74,18 @@ def convert_page_ensemble(pdf_path: str, providers: tuple[str, ...] = DEFAULT_EN
 
     `api_keys` maps provider name to the key to use for it; a provider not
     present there falls back to that provider's own environment variable
-    (see vision_ocr.py). Raises whatever convert.pdf_to_markdown_vision
-    raises (RuntimeError for a missing key, etc.) - callers decide whether
-    to skip or propagate."""
+    (see vision_ocr.py). `dpi` is passed straight through to
+    convert.pdf_to_markdown_vision - both ensemble members should be
+    evaluated at the same image resolution the primary conversion used, or
+    a disagreement could just reflect a quality difference rather than a
+    genuine transcription disagreement. Raises whatever
+    convert.pdf_to_markdown_vision raises (RuntimeError for a missing key,
+    etc.) - callers decide whether to skip or propagate."""
     api_keys = api_keys or {}
     outputs = {}
     for provider in providers:
-        chunks = convert.pdf_to_markdown_vision(pdf_path, provider=provider, api_key=api_keys.get(provider))
+        chunks = convert.pdf_to_markdown_vision(
+            pdf_path, provider=provider, api_key=api_keys.get(provider), dpi=dpi)
         outputs[provider] = chunks[0]["markdown"]
     return outputs
 

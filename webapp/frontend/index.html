@@ -68,7 +68,11 @@
         <option value="anthropic">Claude</option>
         <option value="openai">GPT (OpenAI)</option>
       </select>
+      <label for="upload-dpi-input">Image DPI</label>
+      <input type="number" id="upload-dpi-input" value="200" min="100" max="600" step="50" disabled>
     </div>
+    <p class="hint small">Higher DPI sends a sharper page image to the model - worth raising for small or handwritten
+      text, at the cost of a larger image per page (slower, more tokens).</p>
     <div class="row engine-row">
       <label for="category-input">Category</label>
       <input type="text" id="category-input" placeholder="Leave blank to auto-suggest (needs an API key)">
