@@ -615,7 +615,11 @@ as a user setting (100–600, default 200) after a real handwritten Thai scan OC
 the previously-hardcoded default → **QnA tab**: handwritten question slips transcribed by Claude with
 schema-enforced structured output, reviewed page by page against the scan with a
 pending/review/done status, exported to CSV/Word; ported from the standalone FarmDeApp
-`thai_ocr` scripts, with an import script for the pages those had already transcribed.
+`thai_ocr` scripts, with an import script for the pages those had already transcribed → **`deploy.sh` waits
+until the server actually answers** (up to 3 minutes) instead of a fixed 2-second check - a
+first start after an install/update compiles every heavy dependency and took ~20s, so the
+script said "Running, open localhost" while nothing was listening yet and the browser got
+"connection refused".
 
 **Known limitations:**
 

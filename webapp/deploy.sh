@@ -99,6 +99,7 @@ deploy_local() {
   echo "==> Checking system dependencies..."
   NEED_APT=()
   command -v git >/dev/null 2>&1 || NEED_APT+=(git)
+  command -v curl >/dev/null 2>&1 || NEED_APT+=(curl)
   python3 -c "import venv" >/dev/null 2>&1 || NEED_APT+=(python3-venv)
   command -v pip3 >/dev/null 2>&1 || NEED_APT+=(python3-pip)
   command -v tesseract >/dev/null 2>&1 || NEED_APT+=(tesseract-ocr tesseract-ocr-eng tesseract-ocr-tha tesseract-ocr-chi-sim)
@@ -136,18 +137,36 @@ deploy_local() {
   rm -f /tmp/ajandb_uvicorn.log
   nohup uvicorn backend.main:app --host 0.0.0.0 --port "$PORT" > /tmp/ajandb_uvicorn.log 2>&1 &
   UVICORN_PID=$!
-  sleep 2
-  if ! kill -0 "$UVICORN_PID" 2>/dev/null; then
-    echo "!! Server failed to start. Last log lines:"
+  # Wait until it actually answers, not just until the process exists: the
+  # first start after an install/update compiles every module (OpenCV,
+  # PyMuPDF, PyThaiNLP, both model SDKs...) and took ~20s even on a fast
+  # machine - a fixed short sleep said "Running, open localhost" while
+  # nothing was listening yet, so the browser got "connection refused".
+  echo "    Waiting for it to finish starting (the first start after an update can take a minute)..."
+  for _ in $(seq 1 180); do
+    if ! kill -0 "$UVICORN_PID" 2>/dev/null; then
+      echo "!! Server failed to start. Last log lines:"
+      tail -n 30 /tmp/ajandb_uvicorn.log
+      exit 1
+    fi
+    if curl -s -o /dev/null "http://localhost:$PORT/"; then
+      break
+    fi
+    sleep 1
+  done
+  if ! curl -s -o /dev/null "http://localhost:$PORT/"; then
+    echo "!! Server is running but still not answering after 3 minutes. Last log lines:"
     tail -n 30 /tmp/ajandb_uvicorn.log
     exit 1
   fi
-  echo "    Running (pid $UVICORN_PID). Logs: /tmp/ajandb_uvicorn.log"
+  echo "    Running and answering (pid $UVICORN_PID). Logs: /tmp/ajandb_uvicorn.log"
 
   if [ "$NO_TUNNEL" = "1" ]; then
     echo "==> Skipping tunnel (--no-tunnel)."
     echo "    Open http://localhost:$PORT/ on this machine - no public URL,"
     echo "    no tunnel to drop or debug."
+    echo "    On a Chromebook (Linux), if localhost doesn't load, try"
+    echo "    http://penguin.linux.test:$PORT/ instead."
     echo "    Stop the server with: kill $UVICORN_PID   (or: pkill -f 'uvicorn backend.main:app')"
     return 0
   fi
