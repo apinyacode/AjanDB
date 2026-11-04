@@ -73,6 +73,8 @@ def find_thai_typos(markdown: str) -> list[dict]:
             continue
         if not _THAI_CHAR_RE.search(word):
             continue  # punctuation, numbers, Latin text, image alt text, ...
+        if word.isdigit():
+            continue  # Thai digits (e.g. ๙๙๙) are in the Thai block too, but a number is never a typo
         seen.add(word)
         typos.append({"word": word, "suggestions": spell(word)})
     return typos

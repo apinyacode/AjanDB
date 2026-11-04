@@ -19,6 +19,11 @@ def test_non_thai_tokens_are_never_flagged():
     assert spellcheck.find_thai_typos(text) == []
 
 
+def test_thai_digit_numbers_are_never_flagged():
+    text = "ผู้ซึ่งฆ่าคน ๙๙๙ คน"
+    assert spellcheck.find_thai_typos(text) == []
+
+
 def test_duplicate_typos_are_only_reported_once():
     text = "สวัสดร สวัสดร สวัสดร"
     typos = spellcheck.find_thai_typos(text)

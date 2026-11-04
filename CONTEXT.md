@@ -482,8 +482,15 @@ two would break the overlay's alignment with the real text.
     reproduction of the stored content and renders images normally.
 - **QnA tab** — upload a PDF of question slips; every page is transcribed in the background
   (live console + document list refreshing every 2s while it runs). The review panel shows the
-  cropped slip (or the full page, toggleable) next to a line-numbered preview of the text with
-  unsure words in yellow, plus the four editable fields. **Mark done & next** saves and moves
+  cropped slip (or the full page, toggleable) next to the four editable fields. The text and
+  clean-paragraph fields reuse the Data Store review's highlight-overlay editor: Thai words
+  pythainlp doesn't know get the same clickable red wavy underline + suggestion menu (a fix
+  applies to both fields, since the clean paragraph repeats the text), and Claude's
+  `⟦unsure⟧` words are highlighted in yellow. The text field doesn't wrap (`white-space: pre`)
+  and has a line-number margin, so line N on screen is always line N of the slip - the line
+  numbers `Spelling fixes` refers to. Typos come from `GET /api/qna/pages/{id}` (and each
+  save's response), computed per page rather than for the whole page list, since a suggestion
+  lookup per flagged word is too slow to run for every page of a long document. **Mark done & next** saves and moves
   on; **Save (keep in review)** saves without finishing. "Only pages still to review" (on by
   default) hides done pages so the dropdown is a to-do list. Per document: counts by status,
   **Export CSV** (UTF-8 with BOM so Excel shows Thai correctly; `done_only=true` supported by
@@ -532,11 +539,12 @@ correct from passing tests alone.
 
 ## Current state
 
-**341 tests pass** (48 in `pdf_to_docx_pipeline`, 293 in `webapp`), covering: QnA (cropping
+**343 tests pass** (48 in `pdf_to_docx_pipeline`, 295 in `webapp`), covering: QnA (cropping
 ignores scanner edge lines and keeps a blank page whole, structured answer → review fields,
 upload → background transcription → per-page status with one page failing, retry re-sending
 only failed pages, edit/mark-done/export CSV+Word including `done_only`, delete removing rows
-and images, missing-key/non-PDF rejection, backend-environment key fallback - Claude mocked,
+and images, missing-key/non-PDF rejection, backend-environment key fallback, per-page Thai
+typo flags across text + clean - Claude mocked,
 PDF rendering/cropping/DB/exports real) and `scripts/import_thai_ocr.py` (reviewed `_DONE`
 text, JSON-only pages, untranscribed pages, older `crops/` layout, no duplicate on re-run),
 the SQLite/FTS5
@@ -615,7 +623,11 @@ as a user setting (100–600, default 200) after a real handwritten Thai scan OC
 the previously-hardcoded default → **QnA tab**: handwritten question slips transcribed by Claude with
 schema-enforced structured output, reviewed page by page against the scan with a
 pending/review/done status, exported to CSV/Word; ported from the standalone FarmDeApp
-`thai_ocr` scripts, with an import script for the pages those had already transcribed → **`deploy.sh` waits
+`thai_ocr` scripts, with an import script for the pages those had already transcribed → **QnA spell-check editor**: the QnA text fields became highlight-overlay editors with the
+same click-to-correct Thai spell-check as Data Store's review (`#spellcheck-menu` moved out of
+the Data Store section to `<body>` level so any tab can show it, and `showSpellcheckMenu` takes
+the editor to apply a pick to); `find_thai_typos` stops flagging Thai-digit numbers like ๙๙๙
+→ **`deploy.sh` waits
 until the server actually answers** (up to 3 minutes) instead of a fixed 2-second check - a
 first start after an install/update compiles every heavy dependency and took ~20s, so the
 script said "Running, open localhost" while nothing was listening yet and the browser got

@@ -209,3 +209,23 @@ def test_backend_environment_key_is_enough(tmp_path, monkeypatch):
     assert resp.status_code == 200
     _wait(client, resp.json()["job_id"])
     assert seen == [None]  # no browser key -> the SDK client reads the environment itself
+
+
+def test_page_endpoint_flags_thai_typos_in_text_and_clean(tmp_path, monkeypatch):
+    result = {**_fake_result(), "lines": ["สวัสดร ครับ", "ผู้ซึ่งฆ่าคน ๙๙๙ คน"], "greeting": "",
+              "question": "สวัสดร ครับ ผู้ซึ่งฆ่าคน ๙๙๙ คน"}
+    monkeypatch.setattr(qna, "_call_claude", lambda full_page, crop, api_key: result)
+    client = _client(tmp_path, monkeypatch)
+    started = _upload(client, pages=1)
+    _wait(client, started["job_id"])
+    page_id = client.get(f"/api/qna/documents/{started['document_id']}").json()["pages"][0]["id"]
+
+    page = client.get(f"/api/qna/pages/{page_id}").json()
+    assert [t["word"] for t in page["typos"]] == ["สวัสดร"]  # once, though it's in both fields; digits never flagged
+    assert "สวัสดี" in page["typos"][0]["suggestions"]
+    assert "ai_json" not in page
+    assert client.get("/api/qna/pages/9999").status_code == 404
+
+    fixed = client.put(f"/api/qna/pages/{page_id}", json={
+        "text": "สวัสดี ครับ", "clean": "สวัสดี ครับ", "fixes": "", "notes": "", "status": "review"})
+    assert fixed.json()["typos"] == []

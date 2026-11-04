@@ -483,7 +483,16 @@ function hideSpellcheckMenu() {
   spellcheckMenu.innerHTML = "";
 }
 
-function showSpellcheckMenu(markEl, typoEntry) {
+// `applySuggestion` defaults to the Data Store review editor; the QnA tab
+// passes its own, since it has two editors of its own (see the QnA section).
+function showSpellcheckMenu(markEl, typoEntry, applySuggestion = (suggestion) => {
+  // Every occurrence of this exact word, not just the one clicked - an
+  // OCR/vision-LLM typo is normally the same mistake wherever it recurs, and
+  // flagged_snippets-style matching is already by exact string throughout
+  // this app, not by position.
+  reviewMarkdown.value = reviewMarkdown.value.split(typoEntry.word).join(suggestion);
+  updateReviewHighlight();
+}) {
   spellcheckMenu.innerHTML = "";
   const suggestions = (typoEntry.suggestions || []).slice(0, 5);
   if (!suggestions.length) {
@@ -497,13 +506,8 @@ function showSpellcheckMenu(markEl, typoEntry) {
       btn.type = "button";
       btn.textContent = suggestion;
       btn.addEventListener("click", () => {
-        // Every occurrence of this exact word, not just the one clicked -
-        // an OCR/vision-LLM typo is normally the same mistake wherever it
-        // recurs, and flagged_snippets-style matching is already by exact
-        // string throughout this app, not by position.
-        reviewMarkdown.value = reviewMarkdown.value.split(typoEntry.word).join(suggestion);
         hideSpellcheckMenu();
-        updateReviewHighlight();
+        applySuggestion(suggestion);
       });
       spellcheckMenu.appendChild(btn);
     });
@@ -1262,9 +1266,15 @@ const qnaFields = {
   fixes: document.getElementById("qna-fixes"),
   notes: document.getElementById("qna-notes"),
 };
+const qnaHighlights = {
+  text: document.getElementById("qna-text-highlight"),
+  clean: document.getElementById("qna-clean-highlight"),
+};
+const qnaLineNumbers = document.getElementById("qna-line-numbers");
 let qnaDoc = null;          // the open document, with its pages
 let qnaPageId = null;       // the page shown in the review panel
 let qnaShowFullPage = false;
+let qnaTypos = [];          // Thai spelling flags for the shown page (text + clean), from the backend
 
 function qnaVisiblePages() {
   if (!qnaDoc) return [];
@@ -1405,12 +1415,33 @@ function renderQnaPageOptions() {
   }
 }
 
-function renderQnaPreview() {
-  const rows = qnaFields.text.value.split("\n").map((line, i) => {
-    const marked = escapeHtml(line).replace(/⟦(.+?)⟧/g, '<mark class="qna-unsure">$1</mark>');
-    return `<span class="qna-line-no">${i + 1}</span>${marked}`;
-  });
-  document.getElementById("qna-preview").innerHTML = rows.join("<br>");
+// Same highlight-overlay editor as the Data Store review (see
+// updateReviewHighlight): red wavy underlines on Thai words the dictionary
+// doesn't know, clickable for suggestions, plus Claude's ⟦unsure⟧ words in
+// yellow. Re-rendered from the textarea's current value on every keystroke,
+// so a fixed word's underline disappears as soon as it no longer matches.
+function renderQnaHighlights() {
+  for (const name of ["text", "clean"]) {
+    const value = qnaFields[name].value;
+    const groups = [
+      { snippets: value.match(/⟦.+?⟧/g) || [], className: "qna-unsure" },
+      { snippets: qnaTypos.map((t) => t.word).filter((w) => value.includes(w)), className: "typo" },
+    ];
+    qnaHighlights[name].innerHTML = renderHighlightedMarkdown(value, groups) + "\n";
+    qnaHighlights[name].scrollTop = qnaFields[name].scrollTop;
+    qnaHighlights[name].scrollLeft = qnaFields[name].scrollLeft;
+  }
+  const lineCount = qnaFields.text.value.split("\n").length;
+  qnaLineNumbers.textContent = Array.from({ length: lineCount }, (_, i) => i + 1).join("\n");
+  qnaLineNumbers.scrollTop = qnaFields.text.scrollTop;
+  hideSpellcheckMenu();
+}
+
+async function loadQnaTypos(pageId) {
+  const resp = await fetch(`/api/qna/pages/${pageId}`);
+  if (!resp.ok || pageId !== qnaPageId) return;  // moved on to another page meanwhile
+  qnaTypos = (await resp.json()).typos || [];
+  renderQnaHighlights();
 }
 
 function showQnaPage(pageId) {
@@ -1431,8 +1462,10 @@ function showQnaPage(pageId) {
   document.getElementById("qna-done-btn").disabled = qnaFields.text.disabled;
   document.getElementById("qna-save-btn").disabled = qnaFields.text.disabled;
   document.getElementById("qna-save-status").textContent = "";
-  renderQnaPreview();
+  qnaTypos = [];
+  renderQnaHighlights();
   renderQnaPageOptions();
+  if (!qnaFields.text.disabled) loadQnaTypos(pageId);
 }
 
 function moveQnaPage(step) {
@@ -1458,12 +1491,34 @@ async function saveQnaPage(status) {
     return false;
   }
   qnaDoc.pages = qnaDoc.pages.map((p) => (p.id === body.id ? body : p));
+  qnaTypos = body.typos || [];
+  renderQnaHighlights();
   saveStatus.textContent = "Saved.";
   loadQnaDocuments();
   return true;
 }
 
-qnaFields.text.addEventListener("input", renderQnaPreview);
+for (const name of ["text", "clean"]) {
+  qnaFields[name].addEventListener("input", renderQnaHighlights);
+  qnaFields[name].addEventListener("scroll", () => {
+    qnaHighlights[name].scrollTop = qnaFields[name].scrollTop;
+    qnaHighlights[name].scrollLeft = qnaFields[name].scrollLeft;
+    if (name === "text") qnaLineNumbers.scrollTop = qnaFields.text.scrollTop;
+    hideSpellcheckMenu();
+  });
+  qnaHighlights[name].addEventListener("click", (e) => {
+    const markEl = e.target.closest("mark.typo");
+    const typoEntry = markEl && qnaTypos.find((t) => t.word === markEl.textContent);
+    if (!typoEntry) return;
+    // Fix the word in both editors - the clean paragraph repeats the same text.
+    showSpellcheckMenu(markEl, typoEntry, (suggestion) => {
+      for (const field of [qnaFields.text, qnaFields.clean]) {
+        field.value = field.value.split(typoEntry.word).join(suggestion);
+      }
+      renderQnaHighlights();
+    });
+  });
+}
 qnaPageSelect.addEventListener("change", () => showQnaPage(Number(qnaPageSelect.value)));
 qnaOnlyReview.addEventListener("change", renderQnaPageOptions);
 document.getElementById("qna-prev-btn").addEventListener("click", () => moveQnaPage(-1));
