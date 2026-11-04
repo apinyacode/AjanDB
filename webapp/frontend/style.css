@@ -749,30 +749,79 @@ mark {
   opacity: 0.75;
 }
 
-.qna-preview {
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  padding: 0.5rem 0.7rem;
-  margin-bottom: 0.4rem;
-  line-height: 1.8;
-  font-size: 1.05rem;
+/* The editable text boxes reuse the Data Store review's highlight-overlay
+   editor (.markdown-editor - red wavy Thai typo underlines you can click for
+   suggestions), at fixed heights since two of them share one column. Both
+   layers must keep identical font metrics, so size/line-height are set on
+   the pair together, never on the textarea alone. */
+.qna-editor {
+  --zoom-font-size: 1rem;
 }
 
-.qna-line-no {
-  display: inline-block;
-  width: 2em;
+.qna-editor .markdown-highlight,
+.qna-editor textarea {
+  line-height: 1.7;
+  font-family: inherit;
+}
+
+.qna-editor textarea {
+  resize: none;
+  background: transparent;
+  color: var(--fg);
+  z-index: 1;
+}
+
+/* The line-by-line text never wraps, so "line 12" in Spelling fixes and the
+   line numbers in the margin always match the writer's lines on the slip. */
+.qna-text-editor .markdown-highlight,
+.qna-text-editor textarea {
+  white-space: pre;
+  word-wrap: normal;
+  overflow-wrap: normal;
+}
+
+.qna-text-wrap {
+  display: flex;
+  gap: 0.3rem;
+}
+
+.qna-text-editor {
+  flex: 1;
+  height: 20rem;
+}
+
+.qna-clean-editor {
+  height: 9rem;
+}
+
+.qna-line-numbers {
+  height: 20rem;
+  overflow: hidden;
+  padding: calc(0.5rem + 1px) 0.2rem;  /* textarea padding + border, so line 1 lines up */
+  min-width: 2em;
+  text-align: right;
+  white-space: pre;
+  font-size: 0.85rem;
+  line-height: calc(1rem * 1.7);       /* same line pitch as the editor next to it */
   opacity: 0.5;
-  font-size: 0.85em;
+}
+
+.qna-typo-sample {
+  text-decoration: underline wavy #e04b4b;
+  text-decoration-thickness: 2px;
+  text-underline-offset: 2px;
 }
 
 mark.qna-unsure {
-  background: #ffe066;
+  /* Translucent: in the editor this sits on the overlay layer above the
+     textarea, and the real text has to show through it. */
+  background: rgba(255, 210, 50, 0.45);
   color: inherit;
   border-radius: 3px;
   padding: 0 2px;
 }
 
-.qna-fields textarea {
+.qna-fields > textarea {
   font-size: 1rem;
   line-height: 1.6;
 }

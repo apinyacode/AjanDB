@@ -180,7 +180,6 @@
       </div>
       <p id="review-status" class="status"></p>
     </div>
-    <div id="spellcheck-menu" class="spellcheck-menu hidden" role="menu"></div>
   </section>
 
   <section id="search" class="tab">
@@ -308,15 +307,24 @@
           </div>
         </div>
         <div class="review-col qna-fields">
-          <h3>Text <span class="hint small">(same line breaks as the paper)</span></h3>
-          <div id="qna-preview" class="qna-preview" aria-label="Line-numbered preview"></div>
-          <textarea id="qna-text" rows="10" spellcheck="false"></textarea>
+          <h3><label for="qna-text">Text</label> <span class="hint small">(editable - same line breaks as the paper)</span></h3>
+          <div class="qna-text-wrap">
+            <div id="qna-line-numbers" class="qna-line-numbers" aria-hidden="true"></div>
+            <div class="markdown-editor qna-editor qna-text-editor">
+              <div id="qna-text-highlight" class="markdown-highlight" aria-hidden="true"></div>
+              <textarea id="qna-text" wrap="off" spellcheck="false"></textarea>
+            </div>
+          </div>
           <p class="hint small">
-            <mark class="qna-unsure">Yellow</mark> = Claude wasn't sure. Check the word, then remove its
-            &#10214; &#10215; marks.
+            <span class="qna-typo-sample">Red wavy underline</span> = possible Thai typo - click it for
+            suggestions. <mark class="qna-unsure">Yellow</mark> = Claude wasn't sure - check the word,
+            then remove its &#10214; &#10215; marks.
           </p>
           <label for="qna-clean">Clean version (one paragraph)</label>
-          <textarea id="qna-clean" rows="4"></textarea>
+          <div class="markdown-editor qna-editor qna-clean-editor">
+            <div id="qna-clean-highlight" class="markdown-highlight" aria-hidden="true"></div>
+            <textarea id="qna-clean" spellcheck="false"></textarea>
+          </div>
           <label for="qna-fixes">Spelling fixes (as written -&gt; corrected)</label>
           <textarea id="qna-fixes" rows="3" spellcheck="false"></textarea>
           <label for="qna-notes">Notes</label>
@@ -331,6 +339,11 @@
     </div>
   </section>
 </main>
+
+<!-- Outside every tab (it's position: fixed anyway), so the Data Store review and the QnA
+     tab can both show it - inside one tab's section it would be hidden whenever another
+     tab is active. -->
+<div id="spellcheck-menu" class="spellcheck-menu hidden" role="menu"></div>
 
 <script src="app.js"></script>
 </body>

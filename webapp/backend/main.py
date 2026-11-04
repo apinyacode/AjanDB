@@ -21,7 +21,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import book_compiler, categorize, content_studio, convert, db, originals, qna, review, sources, tts
+from . import book_compiler, categorize, content_studio, convert, db, originals, qna, review, sources, spellcheck, tts
 
 app = FastAPI(title="AjanDB")
 
@@ -951,6 +951,30 @@ def qna_get_document(document_id: int):
         conn.close()
 
 
+def _qna_page_response(page: dict) -> dict:
+    """One page for the review panel: without the raw model answer, plus the
+    unsure-word count and Thai spelling flags for the two fields the editor
+    underlines (same pythainlp check the Data Store review uses - see
+    spellcheck.py). Typos are only computed here, per page, not for the whole
+    page list - a dictionary suggestion lookup per flagged word is too slow
+    to run for every page of a 60-page document just to draw the dropdown."""
+    return {**{k: v for k, v in page.items() if k != "ai_json"},
+            "unsure": qna.unsure_count(page["text"]),
+            "typos": spellcheck.find_thai_typos(page["text"] + "\n" + page["clean"])}
+
+
+@app.get("/api/qna/pages/{page_id}")
+def qna_get_page(page_id: int):
+    conn = db.get_connection()
+    try:
+        page = db.get_qna_page(conn, page_id)
+    finally:
+        conn.close()
+    if not page:
+        raise HTTPException(404, "QnA page not found")
+    return _qna_page_response(page)
+
+
 class QnAPageUpdateRequest(BaseModel):
     text: str
     clean: str
@@ -970,9 +994,9 @@ def qna_update_page(page_id: int, req: QnAPageUpdateRequest):
         if not updated:
             raise HTTPException(404, "QnA page not found")
         page = db.get_qna_page(conn, page_id)
-        return {**{k: v for k, v in page.items() if k != "ai_json"}, "unsure": qna.unsure_count(page["text"])}
     finally:
         conn.close()
+    return _qna_page_response(page)
 
 
 @app.get("/api/qna/images/{document_id}/{page_number}")
