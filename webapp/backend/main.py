@@ -21,7 +21,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import book_compiler, categorize, content_studio, convert, db, originals, review, sources, tts
+from . import book_compiler, categorize, content_studio, convert, db, originals, qna, review, sources, tts
 
 app = FastAPI(title="AjanDB")
 
@@ -829,6 +829,191 @@ def start_content_generation(req: ContentGenerateRequest):
 @app.get("/api/generate/{job_id}")
 def content_generation_status(job_id: str):
     return _job_status_response(job_id, "Unknown content-generation job")
+
+
+# --- QnA: handwritten question slips (see qna.py) ---
+#
+# Upload renders and transcribes every page as a background job (same job/poll
+# pattern as /api/upload - a 60-page document takes several minutes). Pages are
+# saved one by one as they finish, so the QnA tab can show and review early
+# pages while the rest are still running.
+
+def _qna_log(job_id: str, message: str):
+    print(f"[qna {job_id[:8]}] {message}", flush=True)
+    with _jobs_lock:
+        _job_logs.setdefault(job_id, []).append(message)
+
+
+def _qna_api_key(anthropic_api_key: str | None) -> str | None:
+    """QnA is Claude-only (it relies on Anthropic's structured output), so
+    unlike the other features there's no OpenAI fallback - fail at request
+    time rather than letting every page of a background job fail one by one."""
+    key = anthropic_api_key or os.environ.get("ANTHROPIC_API_KEY")
+    if not key:
+        raise HTTPException(400, "QnA needs an Anthropic API key - add one in the API Keys panel.")
+    return anthropic_api_key  # None -> the client reads the backend's own environment
+
+
+def _run_qna_job(job_id: str, document_id: int, api_key: str | None, pdf_path: str | None = None):
+    try:
+        if pdf_path:
+            _qna_log(job_id, "Splitting the PDF into page images...")
+            total = qna.render_pages(pdf_path, document_id)
+            _qna_log(job_id, f"{total} page(s) ready - transcribing with Claude...")
+        succeeded, failed = qna.transcribe_document(
+            document_id, api_key, log=lambda message: _qna_log(job_id, message))
+    except Exception as e:
+        _qna_log(job_id, f"ERROR: {e}")
+        _set_job(job_id, status="error", code=422, detail=f"QnA transcription failed: {e}")
+        return
+    finally:
+        if pdf_path:
+            os.unlink(pdf_path)
+    _qna_log(job_id, f"Done: {succeeded} page(s) transcribed, {failed} failed"
+             + (" - use 'Retry failed pages' to try those again." if failed else "."))
+    _set_job(job_id, status="done", result={"document_id": document_id, "succeeded": succeeded, "failed": failed})
+
+
+def _start_qna_job(document_id: int, api_key: str | None, pdf_path: str | None = None) -> str:
+    job_id = uuid.uuid4().hex
+    _set_job(job_id, status="processing")
+    threading.Thread(target=_run_qna_job, args=(job_id, document_id, api_key, pdf_path), daemon=True).start()
+    return job_id
+
+
+@app.post("/api/qna/upload")
+async def qna_upload(file: UploadFile = File(...), anthropic_api_key: str | None = Form(None)):
+    if os.path.splitext(file.filename or "")[1].lower() != ".pdf":
+        raise HTTPException(400, "QnA only accepts PDF files.")
+    api_key = _qna_api_key(anthropic_api_key)
+    with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
+        shutil.copyfileobj(file.file, tmp)
+        pdf_path = tmp.name
+    try:
+        total_pages = qna.pdf_page_count(pdf_path)
+    except Exception as e:
+        os.unlink(pdf_path)
+        raise HTTPException(400, f"Could not read {file.filename} as a PDF: {e}")
+
+    conn = db.get_connection()
+    try:
+        document_id = db.create_qna_document(conn, file.filename, total_pages)
+    finally:
+        conn.close()
+    return {"job_id": _start_qna_job(document_id, api_key, pdf_path), "document_id": document_id,
+            "status": "processing"}
+
+
+class QnATranscribeRequest(BaseModel):
+    anthropic_api_key: str | None = None  # typed into the frontend - stored only in the browser
+
+
+@app.post("/api/qna/documents/{document_id}/transcribe")
+def qna_retry(document_id: int, req: QnATranscribeRequest):
+    """Transcribes whatever is still pending or failed (a page that errored,
+    or a job lost to a server restart). Never re-sends a page already in
+    review/done."""
+    api_key = _qna_api_key(req.anthropic_api_key)
+    conn = db.get_connection()
+    try:
+        if not db.get_qna_document(conn, document_id):
+            raise HTTPException(404, "QnA document not found")
+    finally:
+        conn.close()
+    return {"job_id": _start_qna_job(document_id, api_key), "status": "processing"}
+
+
+@app.get("/api/qna/jobs/{job_id}")
+def qna_job_status(job_id: str):
+    return _job_status_response(job_id, "Unknown QnA job")
+
+
+@app.get("/api/qna/documents")
+def qna_list_documents():
+    conn = db.get_connection()
+    try:
+        return db.list_qna_documents(conn)
+    finally:
+        conn.close()
+
+
+@app.get("/api/qna/documents/{document_id}")
+def qna_get_document(document_id: int):
+    conn = db.get_connection()
+    try:
+        document = db.get_qna_document(conn, document_id)
+        if not document:
+            raise HTTPException(404, "QnA document not found")
+        pages = [{**{k: v for k, v in p.items() if k != "ai_json"}, "unsure": qna.unsure_count(p["text"])}
+                 for p in db.list_qna_pages(conn, document_id)]
+        return {**document, "pages": pages}
+    finally:
+        conn.close()
+
+
+class QnAPageUpdateRequest(BaseModel):
+    text: str
+    clean: str
+    fixes: str
+    notes: str
+    status: str  # "review" or "done"
+
+
+@app.put("/api/qna/pages/{page_id}")
+def qna_update_page(page_id: int, req: QnAPageUpdateRequest):
+    conn = db.get_connection()
+    try:
+        try:
+            updated = db.update_qna_page(conn, page_id, req.text, req.clean, req.fixes, req.notes, req.status)
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+        if not updated:
+            raise HTTPException(404, "QnA page not found")
+        page = db.get_qna_page(conn, page_id)
+        return {**{k: v for k, v in page.items() if k != "ai_json"}, "unsure": qna.unsure_count(page["text"])}
+    finally:
+        conn.close()
+
+
+@app.get("/api/qna/images/{document_id}/{page_number}")
+def qna_page_image(document_id: int, page_number: int, kind: str = "crop"):
+    path = qna.image_path(document_id, page_number, "full" if kind == "full" else "crop")
+    if not os.path.isfile(path):
+        raise HTTPException(404, "Image not found")
+    return FileResponse(path, media_type="image/jpeg")
+
+
+@app.get("/api/qna/documents/{document_id}/export")
+def qna_export(document_id: int, format: str = "csv", done_only: bool = False):
+    conn = db.get_connection()
+    try:
+        document = db.get_qna_document(conn, document_id)
+        if not document:
+            raise HTTPException(404, "QnA document not found")
+        stem = os.path.splitext(document["source_filename"])[0]
+        if format == "csv":
+            body, media_type, ext = qna.export_csv(conn, document_id, done_only), "text/csv", "csv"
+        elif format == "docx":
+            body = qna.export_docx(conn, document_id, done_only)
+            media_type, ext = "application/vnd.openxmlformats-officedocument.wordprocessingml.document", "docx"
+        else:
+            raise HTTPException(400, "format must be 'csv' or 'docx'")
+    finally:
+        conn.close()
+    return Response(body, media_type=media_type,
+                    headers={"Content-Disposition": _content_disposition(f"{stem}_qna.{ext}")})
+
+
+@app.delete("/api/qna/documents/{document_id}")
+def qna_delete_document(document_id: int):
+    conn = db.get_connection()
+    try:
+        if not db.delete_qna_document(conn, document_id):
+            raise HTTPException(404, "QnA document not found")
+    finally:
+        conn.close()
+    shutil.rmtree(os.path.join(qna.QNA_DIR, str(document_id)), ignore_errors=True)
+    return {"deleted": document_id}
 
 
 # Serve the frontend last so it doesn't shadow the /api/* routes above.

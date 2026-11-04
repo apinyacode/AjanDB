@@ -1245,3 +1245,245 @@ function escapeHtml(s) {
   div.textContent = s;
   return div.innerHTML;
 }
+
+// --- QnA: handwritten question slips (see backend/qna.py) ---
+// Upload runs as a background job (same poll pattern as Data Store uploads);
+// pages are saved one by one, so the document list is refreshed while it runs
+// and early pages can be reviewed before the rest are finished.
+
+const QNA_STATUS_LABELS = { pending: "⏳ waiting", review: "📝 to review", done: "✅ done", error: "⚠️ failed" };
+const qnaPageSelect = document.getElementById("qna-page-select");
+const qnaOnlyReview = document.getElementById("qna-only-review");
+const qnaImage = document.getElementById("qna-image");
+const qnaImageToggle = document.getElementById("qna-image-toggle");
+const qnaFields = {
+  text: document.getElementById("qna-text"),
+  clean: document.getElementById("qna-clean"),
+  fixes: document.getElementById("qna-fixes"),
+  notes: document.getElementById("qna-notes"),
+};
+let qnaDoc = null;          // the open document, with its pages
+let qnaPageId = null;       // the page shown in the review panel
+let qnaShowFullPage = false;
+
+function qnaVisiblePages() {
+  if (!qnaDoc) return [];
+  return qnaDoc.pages.filter((p) => !qnaOnlyReview.checked || p.status === "review" || p.id === qnaPageId);
+}
+
+async function loadQnaDocuments() {
+  const list = document.getElementById("qna-documents");
+  const resp = await fetch("/api/qna/documents");
+  const docs = await resp.json();
+  if (!docs.length) {
+    list.innerHTML = '<p class="hint">No QnA documents yet - upload a PDF above.</p>';
+    return;
+  }
+  list.innerHTML = "";
+  for (const doc of docs) {
+    const card = document.createElement("div");
+    card.className = "book-card";
+    const unfinished = doc.pending + doc.error;
+    card.innerHTML = `
+      <div class="chunk-meta">
+        <strong>${escapeHtml(doc.source_filename)}</strong>
+        <span class="badge">${doc.total_pages} pages</span>
+        <span class="badge">📝 ${doc.review} to review</span>
+        <span class="badge">✅ ${doc.done} done</span>
+        ${doc.pending ? `<span class="badge">⏳ ${doc.pending} waiting</span>` : ""}
+        ${doc.error ? `<span class="badge">⚠️ ${doc.error} failed</span>` : ""}
+      </div>
+      <div class="row">
+        <button type="button" data-action="open">Review</button>
+        <a class="ghost" href="/api/qna/documents/${doc.id}/export?format=csv" download>Export CSV</a>
+        <a class="ghost" href="/api/qna/documents/${doc.id}/export?format=docx" download>Export Word</a>
+        ${unfinished ? '<button type="button" class="ghost" data-action="retry">Retry waiting/failed pages</button>' : ""}
+        <button type="button" class="danger" data-action="delete">Delete</button>
+      </div>`;
+    card.querySelector('[data-action="open"]').addEventListener("click", () => openQnaDocument(doc.id));
+    card.querySelector('[data-action="delete"]').addEventListener("click", async () => {
+      if (!confirm(`Delete ${doc.source_filename} and all its transcriptions and reviews?`)) return;
+      await fetch(`/api/qna/documents/${doc.id}`, { method: "DELETE" });
+      if (qnaDoc && qnaDoc.id === doc.id) {
+        qnaDoc = null;
+        document.getElementById("qna-review-panel").classList.add("hidden");
+      }
+      loadQnaDocuments();
+    });
+    const retryBtn = card.querySelector('[data-action="retry"]');
+    if (retryBtn) {
+      retryBtn.addEventListener("click", async () => {
+        const resp = await fetch(`/api/qna/documents/${doc.id}/transcribe`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ anthropic_api_key: currentApiKeys().anthropic_api_key }),
+        });
+        const body = await resp.json();
+        if (!resp.ok) {
+          document.getElementById("qna-status").textContent = body.detail || "Could not start.";
+          return;
+        }
+        pollQnaJob(body.job_id, doc.id);
+      });
+    }
+    list.appendChild(card);
+  }
+}
+
+async function pollQnaJob(jobId, documentId) {
+  const status = document.getElementById("qna-status");
+  status.textContent = "Transcribing...";
+  for (;;) {
+    const resp = await fetch(`/api/qna/jobs/${jobId}`);
+    const body = await resp.json();
+    if (!resp.ok) {
+      status.textContent = body.detail || "Transcription failed.";
+      break;
+    }
+    renderConsole(body.log, "qna-console");
+    loadQnaDocuments();
+    if (body.status !== "processing") {
+      status.textContent = `Done: ${body.succeeded} page(s) transcribed${body.failed ? `, ${body.failed} failed` : ""}.`;
+      if (qnaDoc && qnaDoc.id === documentId) openQnaDocument(documentId, qnaPageId);
+      break;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 2000));
+  }
+}
+
+document.getElementById("qna-upload-btn").addEventListener("click", async () => {
+  const input = document.getElementById("qna-file-input");
+  const status = document.getElementById("qna-status");
+  if (!input.files.length) {
+    status.textContent = "Choose a PDF first.";
+    return;
+  }
+  const formData = new FormData();
+  formData.append("file", input.files[0]);
+  const key = currentApiKeys().anthropic_api_key;
+  if (key) formData.append("anthropic_api_key", key);
+  const uploadBtn = document.getElementById("qna-upload-btn");
+  uploadBtn.disabled = true;
+  status.textContent = "Uploading...";
+  try {
+    const resp = await fetch("/api/qna/upload", { method: "POST", body: formData });
+    const body = await resp.json();
+    if (!resp.ok) {
+      status.textContent = body.detail || "Upload failed.";
+      return;
+    }
+    input.value = "";
+    await pollQnaJob(body.job_id, body.document_id);
+  } finally {
+    uploadBtn.disabled = false;
+  }
+});
+
+document.getElementById("qna-refresh-btn").addEventListener("click", loadQnaDocuments);
+document.querySelector('.tab-btn[data-tab="qna"]').addEventListener("click", loadQnaDocuments);
+
+async function openQnaDocument(documentId, pageId = null) {
+  const resp = await fetch(`/api/qna/documents/${documentId}`);
+  qnaDoc = await resp.json();
+  document.getElementById("qna-doc-title").textContent = qnaDoc.source_filename;
+  document.getElementById("qna-review-panel").classList.remove("hidden");
+  const visible = qnaVisiblePages();
+  const start = qnaDoc.pages.find((p) => p.id === pageId) || visible[0] || qnaDoc.pages[0];
+  showQnaPage(start.id);
+  document.getElementById("qna-review-panel").scrollIntoView({ behavior: "smooth" });
+}
+
+function renderQnaPageOptions() {
+  qnaPageSelect.innerHTML = "";
+  for (const p of qnaVisiblePages()) {
+    const option = document.createElement("option");
+    option.value = p.id;
+    const extra = p.status === "review" ? ` · ${p.confidence} confidence · ${p.unsure} unsure` : "";
+    option.textContent = `Page ${p.page_number} · ${QNA_STATUS_LABELS[p.status]}${extra}`;
+    option.selected = p.id === qnaPageId;
+    qnaPageSelect.appendChild(option);
+  }
+}
+
+function renderQnaPreview() {
+  const rows = qnaFields.text.value.split("\n").map((line, i) => {
+    const marked = escapeHtml(line).replace(/⟦(.+?)⟧/g, '<mark class="qna-unsure">$1</mark>');
+    return `<span class="qna-line-no">${i + 1}</span>${marked}`;
+  });
+  document.getElementById("qna-preview").innerHTML = rows.join("<br>");
+}
+
+function showQnaPage(pageId) {
+  qnaPageId = pageId;
+  const page = qnaDoc.pages.find((p) => p.id === pageId);
+  qnaImage.src = `/api/qna/images/${qnaDoc.id}/${page.page_number}?kind=${qnaShowFullPage ? "full" : "crop"}`;
+  for (const [name, el] of Object.entries(qnaFields)) {
+    el.value = page[name] || "";
+    el.disabled = page.status === "pending" || page.status === "error";
+  }
+  const info = {
+    pending: "Not transcribed yet - it's still running, or use 'Retry waiting/failed pages'.",
+    error: `Transcription failed: ${page.error || "unknown error"} - use 'Retry waiting/failed pages'.`,
+    review: `To review · ${page.confidence} confidence · ${page.unsure} unsure word(s)`,
+    done: `Done${page.reviewed_at ? ` · checked ${new Date(page.reviewed_at).toLocaleString()}` : ""}`,
+  }[page.status];
+  document.getElementById("qna-page-info").textContent = `Page ${page.page_number} of ${qnaDoc.total_pages} · ${info}`;
+  document.getElementById("qna-done-btn").disabled = qnaFields.text.disabled;
+  document.getElementById("qna-save-btn").disabled = qnaFields.text.disabled;
+  document.getElementById("qna-save-status").textContent = "";
+  renderQnaPreview();
+  renderQnaPageOptions();
+}
+
+function moveQnaPage(step) {
+  const visible = qnaVisiblePages();
+  const index = visible.findIndex((p) => p.id === qnaPageId);
+  const next = visible[index + step];
+  if (next) showQnaPage(next.id);
+}
+
+async function saveQnaPage(status) {
+  const saveStatus = document.getElementById("qna-save-status");
+  const resp = await fetch(`/api/qna/pages/${qnaPageId}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      text: qnaFields.text.value, clean: qnaFields.clean.value,
+      fixes: qnaFields.fixes.value, notes: qnaFields.notes.value, status,
+    }),
+  });
+  const body = await resp.json();
+  if (!resp.ok) {
+    saveStatus.textContent = body.detail || "Save failed.";
+    return false;
+  }
+  qnaDoc.pages = qnaDoc.pages.map((p) => (p.id === body.id ? body : p));
+  saveStatus.textContent = "Saved.";
+  loadQnaDocuments();
+  return true;
+}
+
+qnaFields.text.addEventListener("input", renderQnaPreview);
+qnaPageSelect.addEventListener("change", () => showQnaPage(Number(qnaPageSelect.value)));
+qnaOnlyReview.addEventListener("change", renderQnaPageOptions);
+document.getElementById("qna-prev-btn").addEventListener("click", () => moveQnaPage(-1));
+document.getElementById("qna-next-btn").addEventListener("click", () => moveQnaPage(1));
+qnaImageToggle.addEventListener("click", () => {
+  qnaShowFullPage = !qnaShowFullPage;
+  qnaImageToggle.textContent = qnaShowFullPage ? "Show handwriting only" : "Show full page";
+  showQnaPage(qnaPageId);
+});
+document.getElementById("qna-save-btn").addEventListener("click", () => saveQnaPage("review"));
+document.getElementById("qna-done-btn").addEventListener("click", async () => {
+  const before = qnaVisiblePages();
+  const index = before.findIndex((p) => p.id === qnaPageId);
+  if (!(await saveQnaPage("done"))) return;
+  // With "only pages still to review" on, the page just finished drops out of
+  // the list, so the next one is whatever now sits at the same position.
+  const next = before.slice(index + 1).find((p) => !qnaOnlyReview.checked || p.status === "review");
+  if (next) showQnaPage(next.id);
+  else {
+    showQnaPage(qnaPageId);
+    document.getElementById("qna-save-status").textContent = "Saved - no more pages to review.";
+  }
+});

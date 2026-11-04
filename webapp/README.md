@@ -45,6 +45,17 @@ searchable markdown, and compiling a book from whatever matches a topic.
   unchanged wherever it's quoted — as plain text, as one flow linking the same topic across
   different books, as a generated illustrative image, or as a short narrated vertical
   (TikTok-style) video — see [`../CONTEXT.md`](../CONTEXT.md)'s "Data Generation modes".
+- **QnA** — upload a PDF of handwritten question slips (Thai or English, one question per
+  page). Claude transcribes every page in the background, keeping the writer's line breaks,
+  correcting spelling (each fix listed, so you can see what the paper actually says) and
+  marking words it couldn't read with confidence as `⟦word?⟧` (shown in yellow). You then
+  check each page side by side with its scan and **Mark done**; **Export CSV / Word** at any
+  time. Needs an Anthropic key (Claude only - it relies on Anthropic's structured output);
+  roughly US$0.06 per page. **Retry waiting/failed pages** re-sends only pages that have no
+  transcription yet, never ones already in review or done.
+- **`scripts/import_thai_ocr.py`** — imports pages already transcribed by the standalone
+  `thai_ocr` scripts (FarmDeApp repo) into QnA, including review progress, so they aren't
+  paid for twice: `python3 scripts/import_thai_ocr.py ~/thai_ocr/work`.
 - **`scripts/chunked_upload.py`** — ingests a large book outside the browser, with resume
   support for interrupted runs.
 

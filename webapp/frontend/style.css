@@ -725,3 +725,61 @@ mark {
   font-weight: 700;
   outline: 1px solid var(--danger);
 }
+
+/* --- QnA tab --- */
+/* Same fit-to-screen height as the Data Store review panel, so the slip and
+   its text stay side by side; the right column scrolls through its fields. */
+.qna-image-viewport img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+.qna-fields {
+  height: var(--review-area-height);
+  overflow-y: auto;
+  padding-right: 0.3rem;
+}
+
+.qna-fields label {
+  display: block;
+  margin: 0.6rem 0 0.2rem;
+  font-size: 0.85rem;
+  opacity: 0.75;
+}
+
+.qna-preview {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.5rem 0.7rem;
+  margin-bottom: 0.4rem;
+  line-height: 1.8;
+  font-size: 1.05rem;
+}
+
+.qna-line-no {
+  display: inline-block;
+  width: 2em;
+  opacity: 0.5;
+  font-size: 0.85em;
+}
+
+mark.qna-unsure {
+  background: #ffe066;
+  color: inherit;
+  border-radius: 3px;
+  padding: 0 2px;
+}
+
+.qna-fields textarea {
+  font-size: 1rem;
+  line-height: 1.6;
+}
+
+/* Long option labels ("Page 12 · to review · medium confidence · 3 unsure")
+   would otherwise push the select wider than a phone screen. */
+#qna-page-select {
+  max-width: 100%;
+  min-width: 0;
+}
