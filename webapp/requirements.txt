@@ -1,7 +1,7 @@
 fastapi
 uvicorn[standard]
 python-multipart
-anthropic
+anthropic>=2.3  # qna.py uses structured output + server-side fallbacks
 openai
 python-docx
 pymupdf
@@ -10,3 +10,4 @@ langdetect
 pytesseract
 pythainlp
 requests
+pillow

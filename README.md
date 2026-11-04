@@ -13,6 +13,8 @@ them searchable, with a focus on bilingual English/Thai content.
 - Lets you review and correct a page before it's saved — low-confidence text and Thai
   spelling mistakes highlighted inline, with read-aloud and an opt-in second-model check.
 - Synthesises a new book from stored content matching a topic, via Claude or GPT.
+- **QnA**: transcribes handwritten question slips (Thai/English) with Claude, then lets you
+  check each page against its scan, mark it done, and export the result to CSV or Word.
 
 See [`CONTEXT.md`](CONTEXT.md) for architecture, design decisions, and known limitations.
 

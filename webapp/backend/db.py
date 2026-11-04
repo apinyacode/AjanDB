@@ -83,6 +83,29 @@ def init_db(conn: sqlite3.Connection):
             label_value TEXT NOT NULL,
             PRIMARY KEY (source_filename, total_pages, label_key)
         );
+
+        CREATE TABLE IF NOT EXISTS qna_documents (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            source_filename TEXT NOT NULL,
+            total_pages INTEGER NOT NULL,
+            created_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS qna_pages (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            document_id INTEGER NOT NULL,
+            page_number INTEGER NOT NULL,
+            status TEXT NOT NULL DEFAULT 'pending',
+            confidence TEXT,
+            text TEXT NOT NULL DEFAULT '',
+            clean TEXT NOT NULL DEFAULT '',
+            fixes TEXT NOT NULL DEFAULT '',
+            notes TEXT NOT NULL DEFAULT '',
+            ai_json TEXT,
+            error TEXT,
+            reviewed_at TEXT,
+            UNIQUE (document_id, page_number)
+        );
         """
     )
     conn.commit()
@@ -381,3 +404,112 @@ def search(conn: sqlite3.Connection, query: str, limit: int = 50) -> list[dict]:
         (fts_query, limit),
     ).fetchall()
     return [dict(r) for r in rows]
+
+
+# --- QnA (handwritten question slips, see backend/qna.py) ---
+#
+# Kept in their own tables rather than as rows in `documents`: a QnA page has
+# a review status (pending/review/done/error) and four separately editable
+# fields, not one markdown blob, and a slip that's still waiting for a human
+# check shouldn't show up in Data Search as if it were finished text.
+
+def create_qna_document(conn: sqlite3.Connection, source_filename: str, total_pages: int) -> int:
+    """Creates the document plus one 'pending' row per page, so the page list
+    is complete from the start and transcription can fill it in any order."""
+    cur = conn.execute(
+        "INSERT INTO qna_documents (source_filename, total_pages, created_at) VALUES (?, ?, ?)",
+        (source_filename, total_pages, datetime.now(timezone.utc).isoformat()),
+    )
+    document_id = cur.lastrowid
+    conn.executemany(
+        "INSERT INTO qna_pages (document_id, page_number) VALUES (?, ?)",
+        [(document_id, n) for n in range(1, total_pages + 1)],
+    )
+    conn.commit()
+    return document_id
+
+
+def list_qna_documents(conn: sqlite3.Connection) -> list[dict]:
+    rows = conn.execute(
+        """
+        SELECT d.id, d.source_filename, d.total_pages, d.created_at,
+               SUM(p.status = 'pending') AS pending, SUM(p.status = 'review') AS review,
+               SUM(p.status = 'done') AS done, SUM(p.status = 'error') AS error
+        FROM qna_documents d JOIN qna_pages p ON p.document_id = d.id
+        GROUP BY d.id ORDER BY d.id DESC
+        """
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_qna_document(conn: sqlite3.Connection, document_id: int) -> dict | None:
+    row = conn.execute("SELECT * FROM qna_documents WHERE id = ?", (document_id,)).fetchone()
+    return dict(row) if row else None
+
+
+def list_qna_pages(conn: sqlite3.Connection, document_id: int) -> list[dict]:
+    rows = conn.execute(
+        "SELECT * FROM qna_pages WHERE document_id = ? ORDER BY page_number", (document_id,)
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_qna_page(conn: sqlite3.Connection, page_id: int) -> dict | None:
+    row = conn.execute("SELECT * FROM qna_pages WHERE id = ?", (page_id,)).fetchone()
+    return dict(row) if row else None
+
+
+def qna_pages_to_transcribe(conn: sqlite3.Connection, document_id: int) -> list[int]:
+    """Page numbers that have no transcription yet - never-run or failed
+    pages. Pages already in review/done are never re-sent (that would cost
+    money and could overwrite a human's corrections)."""
+    rows = conn.execute(
+        "SELECT page_number FROM qna_pages WHERE document_id = ? AND status IN ('pending', 'error') "
+        "ORDER BY page_number", (document_id,)
+    ).fetchall()
+    return [r["page_number"] for r in rows]
+
+
+def save_qna_transcription(conn: sqlite3.Connection, document_id: int, page_number: int,
+                           confidence: str, text: str, clean: str, fixes: str, notes: str,
+                           ai_json: str, status: str = "review"):
+    conn.execute(
+        """
+        UPDATE qna_pages SET status = ?, confidence = ?, text = ?, clean = ?, fixes = ?,
+                             notes = ?, ai_json = ?, error = NULL
+        WHERE document_id = ? AND page_number = ?
+        """,
+        (status, confidence, text, clean, fixes, notes, ai_json, document_id, page_number),
+    )
+    conn.commit()
+
+
+def set_qna_page_error(conn: sqlite3.Connection, document_id: int, page_number: int, error: str):
+    conn.execute(
+        "UPDATE qna_pages SET status = 'error', error = ? WHERE document_id = ? AND page_number = ?",
+        (error, document_id, page_number),
+    )
+    conn.commit()
+
+
+def update_qna_page(conn: sqlite3.Connection, page_id: int, text: str, clean: str, fixes: str,
+                    notes: str, status: str) -> bool:
+    """A reviewer's save. Returns False if page_id doesn't exist."""
+    if status not in ("review", "done"):
+        raise ValueError(f"status must be 'review' or 'done', not {status!r}")
+    cur = conn.execute(
+        """
+        UPDATE qna_pages SET text = ?, clean = ?, fixes = ?, notes = ?, status = ?, reviewed_at = ?
+        WHERE id = ?
+        """,
+        (text, clean, fixes, notes, status, datetime.now(timezone.utc).isoformat(), page_id),
+    )
+    conn.commit()
+    return cur.rowcount > 0
+
+
+def delete_qna_document(conn: sqlite3.Connection, document_id: int) -> bool:
+    conn.execute("DELETE FROM qna_pages WHERE document_id = ?", (document_id,))
+    cur = conn.execute("DELETE FROM qna_documents WHERE id = ?", (document_id,))
+    conn.commit()
+    return cur.rowcount > 0

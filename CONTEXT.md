@@ -12,9 +12,10 @@ repo has two parts:
   local models wherever possible; an "AI" (vision-LLM) step is treated as an expensive
   resource spent only where nothing else works.
 - **`webapp/`** — a FastAPI + vanilla JS/HTML/CSS app (no build step, SQLite+FTS5 storage)
-  with three tabs: **Data Store** (upload/convert/review), **Data Search** (full-text search
+  with four tabs: **Data Store** (upload/convert/review), **Data Search** (full-text search
   + browse/export), **Data Generation** (copy-paste retrieval, or LLM-generated text/image/
-  video built around stored content).
+  video built around stored content), **QnA** (handwritten question slips: Claude
+  transcribes, a human checks each page and marks it done).
 
 ## Architecture
 
@@ -162,6 +163,30 @@ outright rather than keeping it alongside the new one - image/video generation (
 image-API call + TTS call + `ffmpeg` assembly, for video) risk exactly the kind of
 long-request timeout the upload job pattern already exists to avoid, and there's no external
 consumer of the old route to keep compatible with.
+
+**QnA** (`webapp/backend/qna.py`, `qna_documents`/`qna_pages` tables in `db.py`, the
+`/api/qna/*` routes in `main.py`) — a separate flow for one kind of document: scanned
+handwritten question slips (Thai/English, one question per page). Upload renders every page
+with PyMuPDF to `data/qna/<document_id>/page_NNN.jpg` (full page) and `page_NNN_crop.jpg`
+(just the handwriting - dark-pixel bounding box, ignoring a thin band at the scan's edges and
+any row/column more than 25% dark, i.e. scanner lines/shadows, then enlarged), then a
+background job (same `_jobs`/poll pattern as `/api/upload`) sends both images to Claude
+(`claude-opus-5-5`, effort high), `CONCURRENT_PAGES` (4) pages at a time, saving each page as
+it finishes so early pages are reviewable while later ones run. Each page row carries a
+`status` - `pending` (not transcribed) → `review` (transcribed, waiting for a human) → `done`
+(a human marked it checked), or `error` (retryable) - and four separately editable text
+fields: `text` (the writer's own line breaks, spelling corrected, unsure words as `⟦word?⟧`),
+`clean` (one paragraph), `fixes` (`line N: as written -> corrected`, one per line) and `notes`;
+Claude's raw structured answer is kept in `ai_json`. Deliberately its own tables rather than
+rows in `documents`: a page needs a review status and four fields, not one markdown blob, and
+an unchecked slip shouldn't surface in Data Search as finished text. Deliberately *not* the
+pipeline's vision engine either: it uses the API's structured output
+(`client.beta.messages.parse` with a pydantic `PageTranscription`), so the response always
+matches the schema - none of the JSON-repair heuristics `vision_ocr._parse_model_json` needs -
+plus the server-side refusal fallback (`fallbacks="default"`). It was first built and run as
+standalone scripts (FarmDeApp repo, `thai_ocr/`) on 260 real pages before moving here;
+`scripts/import_thai_ocr.py` brings those results (and any review already done in their
+`_REVIEW.txt`/`_DONE.txt` files) in without re-transcribing.
 
 **Frontend** (`webapp/frontend/app.js` + `index.html` + `style.css`) — no framework, no
 build step. Central technique is a **highlight-overlay**: an `aria-hidden` div shares the
@@ -455,6 +480,16 @@ two would break the overlay's alignment with the real text.
     anything to a text model (meaningless as prose either way - see
     `book_compiler._strip_embedded_images`), *except* Copy-paste, which is a literal
     reproduction of the stored content and renders images normally.
+- **QnA tab** — upload a PDF of question slips; every page is transcribed in the background
+  (live console + document list refreshing every 2s while it runs). The review panel shows the
+  cropped slip (or the full page, toggleable) next to a line-numbered preview of the text with
+  unsure words in yellow, plus the four editable fields. **Mark done & next** saves and moves
+  on; **Save (keep in review)** saves without finishing. "Only pages still to review" (on by
+  default) hides done pages so the dropdown is a to-do list. Per document: counts by status,
+  **Export CSV** (UTF-8 with BOM so Excel shows Thai correctly; `done_only=true` supported by
+  the API) / **Export Word** (each crop next to its text), **Retry waiting/failed pages**
+  (re-sends only `pending`/`error` pages - never one already in review/done, which would cost
+  money again and could overwrite a human's edits), and **Delete** (rows + `data/qna/<id>/`).
 - **`scripts/chunked_upload.py`** — ingests a large book outside the browser/HTTP entirely:
   splits into page-range batches, converts and inserts each batch as it finishes (pages show
   up in search immediately), and supports `--resume` to pick up after an interruption instead
@@ -497,7 +532,14 @@ correct from passing tests alone.
 
 ## Current state
 
-**330 tests pass** (48 in `pdf_to_docx_pipeline`, 282 in `webapp`), covering: the SQLite/FTS5
+**341 tests pass** (48 in `pdf_to_docx_pipeline`, 293 in `webapp`), covering: QnA (cropping
+ignores scanner edge lines and keeps a blank page whole, structured answer → review fields,
+upload → background transcription → per-page status with one page failing, retry re-sending
+only failed pages, edit/mark-done/export CSV+Word including `done_only`, delete removing rows
+and images, missing-key/non-PDF rejection, backend-environment key fallback - Claude mocked,
+PDF rendering/cropping/DB/exports real) and `scripts/import_thai_ocr.py` (reviewed `_DONE`
+text, JSON-only pages, untranscribed pages, older `crops/` layout, no duplicate on re-run),
+the SQLite/FTS5
 layer and duplicate-page dedup, per-page/per-character-budget chunking and image handling,
 category suggestion with graceful no-key fallback, the book compiler's retrieval and error
 handling for both providers (plus its copy-paste/text/flow/video-script modes - which system
@@ -570,7 +612,10 @@ front, with disagreement spans (plus a Thai dual-tokenizer divergence signal on 
 primary review signal, instead of a human manually triggering a one-off check per page →
 **configurable vision render DPI**: the page-image resolution sent to the vision-LLM, exposed
 as a user setting (100–600, default 200) after a real handwritten Thai scan OCR'd poorly at
-the previously-hardcoded default.
+the previously-hardcoded default → **QnA tab**: handwritten question slips transcribed by Claude with
+schema-enforced structured output, reviewed page by page against the scan with a
+pending/review/done status, exported to CSV/Word; ported from the standalone FarmDeApp
+`thai_ocr` scripts, with an import script for the pages those had already transcribed.
 
 **Known limitations:**
 
@@ -721,6 +766,17 @@ the previously-hardcoded default.
   environment this was built in (only mocked-response tests) — structurally verified, not
   accuracy-verified; run it on a few pages first and check the output before trusting it on
   a full document.
+- **QnA is Claude-only.** It depends on Anthropic's structured output and server-side refusal
+  fallback; there's no OpenAI path, so the tab needs an Anthropic key (browser panel or
+  `ANTHROPIC_API_KEY`) and rejects an upload up front without one.
+- **A QnA job lost to a server restart leaves its unfinished pages `pending`** (jobs are
+  in-memory, same as uploads) - nothing already transcribed is lost, and **Retry
+  waiting/failed pages** finishes the rest, but nothing restarts it automatically.
+- **QnA text isn't in Data Search / Data Generation.** Deliberate for now (unchecked slips
+  shouldn't read as finished content), but there's no "publish done pages to the library"
+  step yet either - export is the only way out.
+- **QnA's per-page confidence is Claude's own high/medium/low estimate**, same "not
+  calibrated" caveat as the vision engine's; the `⟦word?⟧` marks are the more useful signal.
 - **Pipeline: the vision-LLM's JSON output is hand-formatted by the model, not
   schema-enforced.** `_parse_model_json`'s repair layer (see "Vision-LLM JSON repair" above)
   is a real, tested safety net for the two failure shapes actually seen in production so far
@@ -779,8 +835,9 @@ multi-signal "likely wrong" flagging.
   Known limitations rewritten above. Scoped to the review flow only (not bulk upload) - see
   the residual-limitations bullet above for why.
 
-**Not yet done / natural next steps:** a real-Azure-key listen test for Phase 2 (build is
-done, quality unverified); Phase 1 tasks #2-5 (needs a host decision). All three beta launch
+**Not yet done / natural next steps:** QnA: a "send done pages to the library" step (so
+checked slips become searchable in Data Search); an OpenAI fallback if one is ever wanted. Otherwise: a real-Azure-key listen test for Phase 2
+(build is done, quality unverified); Phase 1 tasks #2-5 (needs a host decision). All three beta launch
 phases are otherwise complete - see the repo's `AjanDB_beta_launch_tasks.md` (if kept) for
 the original acceptance criteria.
 

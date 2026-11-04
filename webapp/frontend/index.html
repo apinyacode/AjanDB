@@ -13,6 +13,7 @@
     <button class="tab-btn active" data-tab="upload">1. Data Store</button>
     <button class="tab-btn" data-tab="search">2. Data Search</button>
     <button class="tab-btn" data-tab="chat">3. Data Generation</button>
+    <button class="tab-btn" data-tab="qna">4. QnA</button>
   </nav>
 </header>
 
@@ -260,6 +261,73 @@
       <video id="chat-video-el" controls></video>
       <p class="hint small">Narration script:</p>
       <pre id="chat-video-script" class="markdown-preview"></pre>
+    </div>
+  </section>
+
+  <section id="qna" class="tab">
+    <h2>QnA</h2>
+    <p class="hint">
+      Handwritten question slips (Thai or English). Claude reads every page, then you check each
+      page against its scan and mark it done. Needs an Anthropic key (<strong>API Keys</strong>
+      panel above, or the backend's environment) - roughly US$0.06 per page.
+    </p>
+    <div class="row">
+      <input type="file" id="qna-file-input" accept=".pdf">
+      <button id="qna-upload-btn">Upload &amp; transcribe</button>
+    </div>
+    <p id="qna-status" class="status"></p>
+    <pre id="qna-console" class="console hidden"></pre>
+
+    <h3>Documents</h3>
+    <div class="row">
+      <button id="qna-refresh-btn" class="ghost" type="button">Refresh list</button>
+    </div>
+    <div id="qna-documents"></div>
+
+    <div id="qna-review-panel" class="review-panel hidden">
+      <div class="row review-header">
+        <strong id="qna-doc-title"></strong>
+        <label for="qna-page-select" class="sr-only">Page</label>
+        <select id="qna-page-select"></select>
+        <button id="qna-prev-btn" class="ghost" type="button">&#9664; Prev</button>
+        <button id="qna-next-btn" class="ghost" type="button">Next &#9654;</button>
+        <label class="radio-label">
+          <input type="checkbox" id="qna-only-review" checked>
+          Only pages still to review
+        </label>
+      </div>
+      <p id="qna-page-info" class="hint small"></p>
+      <div class="review-columns">
+        <div class="review-col">
+          <div class="row review-col-header">
+            <h3>Handwriting</h3>
+            <button id="qna-image-toggle" class="ghost" type="button">Show full page</button>
+          </div>
+          <div class="review-image-viewport qna-image-viewport">
+            <img id="qna-image" alt="Scanned question slip">
+          </div>
+        </div>
+        <div class="review-col qna-fields">
+          <h3>Text <span class="hint small">(same line breaks as the paper)</span></h3>
+          <div id="qna-preview" class="qna-preview" aria-label="Line-numbered preview"></div>
+          <textarea id="qna-text" rows="10" spellcheck="false"></textarea>
+          <p class="hint small">
+            <mark class="qna-unsure">Yellow</mark> = Claude wasn't sure. Check the word, then remove its
+            &#10214; &#10215; marks.
+          </p>
+          <label for="qna-clean">Clean version (one paragraph)</label>
+          <textarea id="qna-clean" rows="4"></textarea>
+          <label for="qna-fixes">Spelling fixes (as written -&gt; corrected)</label>
+          <textarea id="qna-fixes" rows="3" spellcheck="false"></textarea>
+          <label for="qna-notes">Notes</label>
+          <textarea id="qna-notes" rows="3"></textarea>
+        </div>
+      </div>
+      <div class="row">
+        <button id="qna-done-btn" type="button">&#9989; Mark done &amp; next</button>
+        <button id="qna-save-btn" class="ghost" type="button">Save (keep in review)</button>
+        <span id="qna-save-status" class="status"></span>
+      </div>
     </div>
   </section>
 </main>

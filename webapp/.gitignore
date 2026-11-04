@@ -9,6 +9,7 @@ data/sources/
 data/originals/
 data/generated_images/
 data/generated_videos/
+data/qna/
 .env
 cloudflared
 *.log

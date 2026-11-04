@@ -5,7 +5,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import pytest
 
-from backend import content_studio, convert, originals, sources, tts
+from backend import content_studio, convert, originals, qna, sources, tts
 
 
 @pytest.fixture(autouse=True)
@@ -48,6 +48,13 @@ def _isolate_generated_media_dirs(tmp_path, monkeypatch):
     webapp/data/generated_videos/."""
     monkeypatch.setattr(content_studio, "IMAGES_DIR", str(tmp_path / "generated_images"))
     monkeypatch.setattr(content_studio, "VIDEOS_DIR", str(tmp_path / "generated_videos"))
+
+
+@pytest.fixture(autouse=True)
+def _isolate_qna_dir(tmp_path, monkeypatch):
+    """Same reasoning as _isolate_images_dir, for qna.py's rendered page
+    images under webapp/data/qna/."""
+    monkeypatch.setattr(qna, "QNA_DIR", str(tmp_path / "qna"))
 
 
 @pytest.fixture(autouse=True)
