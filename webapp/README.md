@@ -122,7 +122,10 @@ bash deploy.sh --no-password        # no password - anyone with the link can rea
 
 Once the tunnel is up it prints a box with the **link** and **password** to send to testers;
 their browser asks for the password once (any username). The link changes on every run, the
-password doesn't. Keep the terminal open - Ctrl+C stops sharing and the server. The password
+password doesn't. Keep the terminal open - Ctrl+C stops sharing and the server. The box only
+appears once the tunnel is actually connected; if Cloudflare won't connect it (its free quick
+tunnels are best-effort), the script retries once over HTTP/2, then stops with what to try next
+while the app keeps running locally. The password
 is just the `AJANDB_PASSWORD` environment variable (`backend/main.py`'s
 `require_tester_password`), so it works the same on any host. If the server has an API key in
 `webapp/.env`, testers' uploads are billed to it - leave it out and let each tester use the
