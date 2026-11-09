@@ -71,3 +71,6 @@ def _clear_provider_env_keys(monkeypatch):
     sets one back with monkeypatch.setenv."""
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    # A tester password exported in the shell (see deploy.sh) would make every
+    # endpoint test get 401; tests that want it set it themselves.
+    monkeypatch.delenv("AJANDB_PASSWORD", raising=False)

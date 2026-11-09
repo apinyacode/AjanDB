@@ -20,6 +20,18 @@
 #                                   #   using this - see "Known limitations
 #                                   #   of the vercel target" below.
 #
+# Sharing with testers (local target, when the tunnel is on):
+#   bash deploy.sh                     # public link + a tester password,
+#                                       #   generated on first use and kept in
+#                                       #   webapp/.env (same password next time)
+#   bash deploy.sh --password=lotus25  # choose the password yourself (saved too)
+#   bash deploy.sh --no-password       # share with NO password - anyone with
+#                                       #   the link can read and delete everything
+# The link and password are printed in a box once the tunnel is up. Testers
+# open the link and type the password into the browser's sign-in box (any
+# username). The link changes on every run; the password doesn't. A password
+# set with --password also applies with --no-tunnel (handy to try it locally).
+#
 # Flags (either target): --no-pull skips `git pull`. --no-tunnel (local
 # target only) skips the cloudflared tunnel - see above. --yes skips the
 # interactive confirmation prompt (vercel target only, for scripted use).
@@ -62,11 +74,15 @@ set -euo pipefail
 TARGET="local"
 NO_PULL=0
 NO_TUNNEL=0
+NO_PASSWORD=0
+PASSWORD_ARG=""
 for arg in "$@"; do
   case "$arg" in
     local|vercel) TARGET="$arg" ;;
     --no-pull) NO_PULL=1 ;;
     --no-tunnel) NO_TUNNEL=1 ;;
+    --no-password) NO_PASSWORD=1 ;;
+    --password=*) PASSWORD_ARG="${arg#--password=}" ;;
   esac
 done
 
@@ -129,6 +145,21 @@ deploy_local() {
     set +a
   fi
 
+  # --- Tester password (see "Sharing with testers" at the top). Exported
+  # before uvicorn starts, which is where the app reads it (backend/main.py's
+  # require_tester_password). ---
+  if [ "$NO_PASSWORD" = "1" ]; then
+    unset AJANDB_PASSWORD
+  elif [ -n "$PASSWORD_ARG" ]; then
+    AJANDB_PASSWORD="$PASSWORD_ARG"
+    save_env_var AJANDB_PASSWORD "$AJANDB_PASSWORD"
+  elif [ -z "${AJANDB_PASSWORD:-}" ] && [ "$NO_TUNNEL" != "1" ]; then
+    AJANDB_PASSWORD="$(python3 -c "import secrets; a='abcdefghjkmnpqrstuvwxyz23456789'; print(''.join(secrets.choice(a) for _ in range(10)))")"
+    save_env_var AJANDB_PASSWORD "$AJANDB_PASSWORD"
+    echo "==> Created a tester password (saved in webapp/.env)."
+  fi
+  [ -n "${AJANDB_PASSWORD:-}" ] && export AJANDB_PASSWORD
+
   echo "==> Stopping any previous server on port $PORT..."
   pkill -9 -f "uvicorn backend.main:app" 2>/dev/null || true
   sleep 1
@@ -167,20 +198,80 @@ deploy_local() {
     echo "    no tunnel to drop or debug."
     echo "    On a Chromebook (Linux), if localhost doesn't load, try"
     echo "    http://penguin.linux.test:$PORT/ instead."
+    [ -n "${AJANDB_PASSWORD:-}" ] && echo "    It asks for the tester password (any username) - see webapp/.env."
     echo "    Stop the server with: kill $UVICORN_PID   (or: pkill -f 'uvicorn backend.main:app')"
     return 0
   fi
 
   echo "==> Setting up cloudflared..."
+  # Pick the build for this machine's processor - many Chromebooks are ARM,
+  # where the amd64 build this used to always download can't run at all.
+  case "$(uname -m)" in
+    x86_64|amd64) CF_ARCH=amd64 ;;
+    aarch64|arm64) CF_ARCH=arm64 ;;
+    armv7l|armv6l) CF_ARCH=arm ;;
+    *) echo "!! No cloudflared build for this processor ($(uname -m)) - use --no-tunnel."; exit 1 ;;
+  esac
   CLOUDFLARED_BIN="$WEBAPP_DIR/cloudflared"
-  if [ ! -x "$CLOUDFLARED_BIN" ]; then
-    curl -Lo "$CLOUDFLARED_BIN" https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64
+  if ! "$CLOUDFLARED_BIN" --version >/dev/null 2>&1; then  # missing, or a wrong-architecture download
+    curl -fLo "$CLOUDFLARED_BIN" "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-$CF_ARCH"
     chmod +x "$CLOUDFLARED_BIN"
   fi
 
-  echo "==> Opening tunnel - Ctrl+C stops both the tunnel and the server."
-  trap 'echo; echo "==> Stopping server (pid $UVICORN_PID)..."; kill "$UVICORN_PID" 2>/dev/null || true' INT TERM EXIT
-  "$CLOUDFLARED_BIN" tunnel --url "http://localhost:$PORT"
+  echo "==> Opening tunnel..."
+  pkill -f "$CLOUDFLARED_BIN tunnel" 2>/dev/null || true  # an earlier run's tunnel, if still up
+  TUNNEL_LOG=/tmp/ajandb_tunnel.log
+  "$CLOUDFLARED_BIN" tunnel --url "http://localhost:$PORT" > "$TUNNEL_LOG" 2>&1 &
+  TUNNEL_PID=$!
+  trap 'echo; echo "==> Stopping sharing and the server..."; kill "$TUNNEL_PID" "$UVICORN_PID" 2>/dev/null || true' INT TERM EXIT
+  # cloudflared prints the public address somewhere in its startup log; wait
+  # for it and show it clearly instead of leaving it buried in that output.
+  TUNNEL_URL=""
+  for _ in $(seq 1 60); do
+    TUNNEL_URL="$(grep -o 'https://[a-z0-9-]*\.trycloudflare\.com' "$TUNNEL_LOG" | head -1 || true)"
+    [ -n "$TUNNEL_URL" ] && break
+    if ! kill -0 "$TUNNEL_PID" 2>/dev/null; then
+      echo "!! The tunnel failed to start. Last log lines:"
+      tail -n 20 "$TUNNEL_LOG"
+      exit 1
+    fi
+    sleep 1
+  done
+  if [ -z "$TUNNEL_URL" ]; then
+    echo "!! No public link after 60s. Last tunnel log lines:"
+    tail -n 20 "$TUNNEL_LOG"
+    exit 1
+  fi
+
+  echo
+  echo "  ================================================================"
+  echo "   Share with testers"
+  echo "     Link:      $TUNNEL_URL"
+  if [ -n "${AJANDB_PASSWORD:-}" ]; then
+    echo "     Password:  $AJANDB_PASSWORD    (any username)"
+  else
+    echo "     Password:  NONE - anyone with the link can see and delete"
+    echo "                everything. Re-run without --no-password to add one."
+  fi
+  if [ -n "${ANTHROPIC_API_KEY:-}" ] || [ -n "${OPENAI_API_KEY:-}" ]; then
+    echo "   Note: the server has an API key set (webapp/.env), so testers'"
+    echo "   uploads are billed to it."
+  fi
+  echo "   The link changes each time you run deploy.sh. Keep this window"
+  echo "   open - closing it or pressing Ctrl+C stops sharing."
+  echo "  ================================================================"
+  echo
+  wait "$TUNNEL_PID"
+}
+
+# Sets NAME=value in webapp/.env (replacing any earlier line for NAME), quoted
+# so the `source .env` above reads it back exactly. Readable only by you.
+save_env_var() {
+  touch .env
+  grep -v "^$1=" .env > .env.tmp || true
+  printf '%s=%q\n' "$1" "$2" >> .env.tmp
+  mv .env.tmp .env
+  chmod 600 .env
 }
 
 deploy_vercel() {
