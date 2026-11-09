@@ -183,7 +183,14 @@ an unchecked slip shouldn't surface in Data Search as finished text. Deliberatel
 pipeline's vision engine either: it uses the API's structured output
 (`client.beta.messages.parse` with a pydantic `PageTranscription`), so the response always
 matches the schema - none of the JSON-repair heuristics `vision_ocr._parse_model_json` needs -
-plus the server-side refusal fallback (`fallbacks="default"`). It was first built and run as
+plus the server-side refusal fallback (`fallbacks="default"`), and prompt caching on the
+instructions: an explicit `cache_control` breakpoint on the system prompt block (identical for
+every page), deliberately *not* top-level automatic caching, which would place the breakpoint
+on the request's last block - this page's images, unique per call - and pay the cache-write
+premium on them every time with nothing ever read back. The saving is modest by design: the
+instructions are roughly 700-900 tokens against ~8-9K tokens of page images per call, so it
+trims about 5% of input cost; `_meta` in `ai_json` records `cache_creation_input_tokens` /
+`cache_read_input_tokens` per page so the hit rate can be checked from real runs. It was first built and run as
 standalone scripts (FarmDeApp repo, `thai_ocr/`) on 260 real pages before moving here;
 `scripts/import_thai_ocr.py` brings those results (and any review already done in their
 `_REVIEW.txt`/`_DONE.txt` files) in without re-transcribing.
@@ -539,7 +546,7 @@ correct from passing tests alone.
 
 ## Current state
 
-**343 tests pass** (48 in `pdf_to_docx_pipeline`, 295 in `webapp`), covering: QnA (cropping
+**344 tests pass** (48 in `pdf_to_docx_pipeline`, 296 in `webapp`), covering: QnA (cropping
 ignores scanner edge lines and keeps a blank page whole, structured answer → review fields,
 upload → background transcription → per-page status with one page failing, retry re-sending
 only failed pages, edit/mark-done/export CSV+Word including `done_only`, delete removing rows
@@ -791,6 +798,11 @@ script said "Running, open localhost" while nothing was listening yet and the br
 - **QnA text isn't in Data Search / Data Generation.** Deliberate for now (unchecked slips
   shouldn't read as finished content), but there's no "publish done pages to the library"
   step yet either - export is the only way out.
+- **QnA's prompt caching hasn't been confirmed against the live API** - the request shape is
+  tested (breakpoint on the instructions only), but the account had no credit left when it
+  was added, so whether the instructions clear Opus 5.5's 512-token cache minimum and actually
+  produce `cache_read_input_tokens` on page 2+ is unverified. Check `_meta` in a few pages'
+  `ai_json` after the next real upload.
 - **QnA's per-page confidence is Claude's own high/medium/low estimate**, same "not
   calibrated" caveat as the vision engine's; the `⟦word?⟧` marks are the more useful signal.
 - **Pipeline: the vision-LLM's JSON output is hand-formatted by the model, not

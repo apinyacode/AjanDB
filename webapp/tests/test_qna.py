@@ -229,3 +229,38 @@ def test_page_endpoint_flags_thai_typos_in_text_and_clean(tmp_path, monkeypatch)
     fixed = client.put(f"/api/qna/pages/{page_id}", json={
         "text": "สวัสดี ครับ", "clean": "สวัสดี ครับ", "fixes": "", "notes": "", "status": "review"})
     assert fixed.json()["typos"] == []
+
+
+def test_claude_request_caches_the_shared_instructions_only(monkeypatch):
+    """The cache breakpoint must sit on the system prompt (identical for every
+    page), not on the per-page images - top-level automatic caching would put
+    it on the images, paying the cache-write premium on every call for
+    content that's never read back."""
+    sent = {}
+
+    class FakeUsage:
+        input_tokens, output_tokens = 9000, 600
+        cache_creation_input_tokens, cache_read_input_tokens = 0, 812
+
+    class FakeResponse:
+        stop_reason, model, usage = "end_turn", "claude-opus-5-5", FakeUsage()
+        parsed_output = qna.PageTranscription(**{k: v for k, v in _fake_result().items() if k != "_meta"})
+
+    class FakeMessages:
+        def parse(self, **kwargs):
+            sent.update(kwargs)
+            return FakeResponse()
+
+    class FakeClient:
+        def __init__(self, **kwargs):
+            self.beta = type("Beta", (), {"messages": FakeMessages()})()
+
+    monkeypatch.setattr(qna.anthropic, "Anthropic", FakeClient)
+    image = {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": "AAAA"}}
+    result = qna._call_claude(image, image, "sk-ant-test")
+
+    assert sent["system"] == [{"type": "text", "text": qna.SYSTEM_PROMPT, "cache_control": {"type": "ephemeral"}}]
+    assert "cache_control" not in sent  # no top-level automatic caching
+    assert not any("cache_control" in block for block in sent["messages"][0]["content"])
+    assert result["_meta"]["cache_read_input_tokens"] == 812
+    assert result["_meta"]["cache_creation_input_tokens"] == 0

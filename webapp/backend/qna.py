@@ -180,7 +180,12 @@ def _call_claude(full_page: dict, crop: dict, api_key: str | None) -> dict:
     response = client.beta.messages.parse(
         model=MODEL,
         max_tokens=16000,
-        system=SYSTEM_PROMPT,
+        # The instructions are identical for every page, so they're cached: an
+        # explicit breakpoint at the end of the shared part, not top-level
+        # automatic caching, which would put the breakpoint on this page's
+        # images - unique per request, so every call would pay the cache-write
+        # premium on them and nothing would ever be read back.
+        system=[{"type": "text", "text": SYSTEM_PROMPT, "cache_control": {"type": "ephemeral"}}],
         output_config={"effort": "high"},  # careful reading matters more than speed here
         # If a page is ever declined by mistake, the API retries it on another model.
         betas=["server-side-fallback-2026-07-01"],
@@ -196,7 +201,9 @@ def _call_claude(full_page: dict, crop: dict, api_key: str | None) -> dict:
         raise RuntimeError(f"no transcription returned (stop_reason={response.stop_reason})")
     return {**response.parsed_output.model_dump(),
             "_meta": {"model": response.model, "input_tokens": response.usage.input_tokens,
-                      "output_tokens": response.usage.output_tokens}}
+                      "output_tokens": response.usage.output_tokens,
+                      "cache_creation_input_tokens": response.usage.cache_creation_input_tokens,
+                      "cache_read_input_tokens": response.usage.cache_read_input_tokens}}
 
 
 def to_fields(result: dict) -> dict:
