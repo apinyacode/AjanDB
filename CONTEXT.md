@@ -842,6 +842,15 @@ script said "Running, open localhost" while nothing was listening yet and the br
   quick tunnel's `*.trycloudflare.com` link also changes on every `deploy.sh` run and exists
   only while that terminal stays open - a stable link needs a named Cloudflare tunnel (a
   Cloudflare account and domain) or a hosted deploy.
+- **Cloudflare's free quick tunnels are best-effort.** A real run hit `Register tunnel error
+  ... "Unauthorized: Tunnel not found"` in a loop: Cloudflare had handed out the link, but the
+  tunnel never registered - and `deploy.sh` had already shown that dead link as shareable. It now
+  waits for cloudflared's "Registered tunnel connection" line before showing the link, gives up
+  on a tunnel after 3 Unauthorized/quick-tunnel errors (or 60s), retries once with a fresh tunnel
+  over `--protocol http2` (the usual fix when the default QUIC won't register), and otherwise
+  stops with plain next steps while leaving the local server running. It also warns when a
+  `~/.cloudflared/config.yml` from an earlier Cloudflare setup is present, since that can
+  interfere with quick tunnels.
 - **The tunnel part of `deploy.sh` was tested with a stand-in `cloudflared`** printing the
   same startup line (the sandbox it was built in can't reach Cloudflare): link extraction,
   banner, password generation/persistence, `--password`/`--no-password`/`--no-tunnel`, and

@@ -218,28 +218,52 @@ deploy_local() {
     chmod +x "$CLOUDFLARED_BIN"
   fi
 
-  echo "==> Opening tunnel..."
   pkill -f "$CLOUDFLARED_BIN tunnel" 2>/dev/null || true  # an earlier run's tunnel, if still up
   TUNNEL_LOG=/tmp/ajandb_tunnel.log
-  "$CLOUDFLARED_BIN" tunnel --url "http://localhost:$PORT" > "$TUNNEL_LOG" 2>&1 &
-  TUNNEL_PID=$!
-  trap 'echo; echo "==> Stopping sharing and the server..."; kill "$TUNNEL_PID" "$UVICORN_PID" 2>/dev/null || true' INT TERM EXIT
-  # cloudflared prints the public address somewhere in its startup log; wait
-  # for it and show it clearly instead of leaving it buried in that output.
+  TUNNEL_PID=""
+  trap 'echo; echo "==> Stopping sharing and the server..."; kill $TUNNEL_PID "$UVICORN_PID" 2>/dev/null || true' INT TERM EXIT
+  if [ -f "$HOME/.cloudflared/config.yml" ] || [ -f "$HOME/.cloudflared/config.yaml" ]; then
+    echo "    Note: found a cloudflared config in ~/.cloudflared/ (from an earlier Cloudflare setup)."
+    echo "    If the tunnel fails, move it aside and run again:  mv ~/.cloudflared ~/.cloudflared.off"
+  fi
+  # Cloudflare hands out the public link *before* the tunnel is actually
+  # connected, and that registration can still fail ("Unauthorized: Tunnel
+  # not found" in a loop) - so wait for the "Registered tunnel connection"
+  # line before showing the link, rather than sharing one that doesn't work.
+  # Quick tunnels are best-effort; when one won't register, a fresh tunnel
+  # over HTTP/2 (instead of the default QUIC) is the usual fix, so that's
+  # tried once automatically.
   TUNNEL_URL=""
-  for _ in $(seq 1 60); do
-    TUNNEL_URL="$(grep -o 'https://[a-z0-9-]*\.trycloudflare\.com' "$TUNNEL_LOG" | head -1 || true)"
+  for PROTOCOL in auto http2; do
+    echo "==> Opening tunnel (protocol: $PROTOCOL)..."
+    "$CLOUDFLARED_BIN" tunnel --protocol "$PROTOCOL" --url "http://localhost:$PORT" > "$TUNNEL_LOG" 2>&1 &
+    TUNNEL_PID=$!
+    for _ in $(seq 1 60); do
+      if grep -q "Registered tunnel connection" "$TUNNEL_LOG"; then
+        TUNNEL_URL="$(grep -o 'https://[a-z0-9-]*\.trycloudflare\.com' "$TUNNEL_LOG" | head -1 || true)"
+        break
+      fi
+      if [ "$(grep -c 'Unauthorized\|failed to request quick Tunnel' "$TUNNEL_LOG" || true)" -ge 3 ]; then
+        break  # retrying the same tunnel won't fix this; try a fresh one
+      fi
+      kill -0 "$TUNNEL_PID" 2>/dev/null || break
+      sleep 1
+    done
     [ -n "$TUNNEL_URL" ] && break
-    if ! kill -0 "$TUNNEL_PID" 2>/dev/null; then
-      echo "!! The tunnel failed to start. Last log lines:"
-      tail -n 20 "$TUNNEL_LOG"
-      exit 1
-    fi
-    sleep 1
+    kill "$TUNNEL_PID" 2>/dev/null || true
+    echo "    The tunnel didn't connect. Last lines of its log:"
+    tail -n 5 "$TUNNEL_LOG" | sed 's/^/      /'
   done
   if [ -z "$TUNNEL_URL" ]; then
-    echo "!! No public link after 60s. Last tunnel log lines:"
-    tail -n 20 "$TUNNEL_LOG"
+    echo
+    echo "!! Couldn't open a public link. The app itself is running fine at"
+    echo "   http://localhost:$PORT/ - only the sharing part failed. Things to try:"
+    echo "   1. Wait a few minutes and run deploy.sh again (Cloudflare's free quick"
+    echo "      tunnels are best-effort and sometimes refuse new tunnels for a while)."
+    echo "   2. If ~/.cloudflared/ exists, move it aside: mv ~/.cloudflared ~/.cloudflared.off"
+    echo "   3. Check this machine's internet connection / any VPN or firewall."
+    echo "   Full tunnel log: $TUNNEL_LOG"
+    trap - INT TERM EXIT  # keep the local server running for the person at this machine
     exit 1
   fi
 
