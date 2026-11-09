@@ -882,10 +882,18 @@ reviewCancelBtn.addEventListener("click", async () => {
   try {
     const res = await fetch(`/api/review/${reviewSessionId}/cancel`, { method: "POST" });
     const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || "Request failed");
     renderConsole(data.log);
     endReviewSession(`Review cancelled: ${data.total_saved} page(s) already saved.`);
   } catch (err) {
-    endReviewSession(`Review cancelled (with an error checking final state: ${err.message}).`);
+    // Review sessions live only in the server's memory, so this is almost
+    // always the server having restarted (deploy.sh re-run, Ctrl+C) or a
+    // shared tunnel link that has since changed - "Failed to fetch" / "Unknown
+    // review session" on their own don't tell anyone what to do next.
+    endReviewSession(
+      `Review closed, but the server couldn't confirm it (${err.message}) - it probably restarted. ` +
+      "Every page you approved is already saved. To carry on from where you stopped, use " +
+      "\"Resume conversion\" on this book in the Data Search tab.");
   }
 });
 
