@@ -6,9 +6,11 @@ book from whatever matches a topic.
 Run with:
     uvicorn backend.main:app --reload --app-dir webapp
 """
+import base64
 import mimetypes
 import os
 import re
+import secrets
 import shutil
 import tempfile
 import threading
@@ -24,6 +26,29 @@ from pydantic import BaseModel
 from . import book_compiler, categorize, content_studio, convert, db, originals, qna, review, sources, spellcheck, tts
 
 app = FastAPI(title="AjanDB")
+
+
+@app.middleware("http")
+async def require_tester_password(request: Request, call_next):
+    """When AJANDB_PASSWORD is set (deploy.sh sets one whenever it opens a
+    public tunnel), every request - pages, API, images - needs it, via the
+    browser's own HTTP Basic sign-in box (any username). This app has no user
+    accounts, and a shared link would otherwise expose the whole library,
+    deleting included, plus whatever API key the server holds. Read per
+    request, not at import, so tests can set it with monkeypatch."""
+    password = os.environ.get("AJANDB_PASSWORD")
+    if password:
+        supplied = ""
+        header = request.headers.get("authorization", "")
+        if header.lower().startswith("basic "):
+            try:
+                supplied = base64.b64decode(header[6:]).decode("utf-8").partition(":")[2]
+            except (ValueError, UnicodeDecodeError):
+                pass  # malformed header - treated as no password
+        if not secrets.compare_digest(supplied.encode(), password.encode()):
+            return Response("AjanDB: password required.", status_code=401,
+                            headers={"WWW-Authenticate": 'Basic realm="AjanDB", charset="UTF-8"'})
+    return await call_next(request)
 
 _FRONTEND_DIR = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "frontend"

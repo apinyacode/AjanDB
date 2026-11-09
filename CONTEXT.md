@@ -183,7 +183,14 @@ an unchecked slip shouldn't surface in Data Search as finished text. Deliberatel
 pipeline's vision engine either: it uses the API's structured output
 (`client.beta.messages.parse` with a pydantic `PageTranscription`), so the response always
 matches the schema - none of the JSON-repair heuristics `vision_ocr._parse_model_json` needs -
-plus the server-side refusal fallback (`fallbacks="default"`). It was first built and run as
+plus the server-side refusal fallback (`fallbacks="default"`), and prompt caching on the
+instructions: an explicit `cache_control` breakpoint on the system prompt block (identical for
+every page), deliberately *not* top-level automatic caching, which would place the breakpoint
+on the request's last block - this page's images, unique per call - and pay the cache-write
+premium on them every time with nothing ever read back. The saving is modest by design: the
+instructions are roughly 700-900 tokens against ~8-9K tokens of page images per call, so it
+trims about 5% of input cost; `_meta` in `ai_json` records `cache_creation_input_tokens` /
+`cache_read_input_tokens` per page so the hit rate can be checked from real runs. It was first built and run as
 standalone scripts (FarmDeApp repo, `thai_ocr/`) on 260 real pages before moving here;
 `scripts/import_thai_ocr.py` brings those results (and any review already done in their
 `_REVIEW.txt`/`_DONE.txt` files) in without re-transcribing.
@@ -539,7 +546,7 @@ correct from passing tests alone.
 
 ## Current state
 
-**343 tests pass** (48 in `pdf_to_docx_pipeline`, 295 in `webapp`), covering: QnA (cropping
+**347 tests pass** (48 in `pdf_to_docx_pipeline`, 299 in `webapp`), covering: QnA (cropping
 ignores scanner edge lines and keeps a blank page whole, structured answer → review fields,
 upload → background transcription → per-page status with one page failing, retry re-sending
 only failed pages, edit/mark-done/export CSV+Word including `done_only`, delete removing rows
@@ -627,6 +634,17 @@ pending/review/done status, exported to CSV/Word; ported from the standalone Far
 same click-to-correct Thai spell-check as Data Store's review (`#spellcheck-menu` moved out of
 the Data Store section to `<body>` level so any tab can show it, and `showSpellcheckMenu` takes
 the editor to apply a pick to); `find_thai_typos` stops flagging Thai-digit numbers like ๙๙๙
+→ **tester access**: an optional
+shared password (`AJANDB_PASSWORD`, HTTP Basic via `main.py`'s `require_tester_password`
+middleware, any username, compared with `secrets.compare_digest`, read per request so tests
+can set it) covering every route - pages, API, images. `deploy.sh` turns it on by default
+whenever it opens the public tunnel (generated once, saved to `webapp/.env` mode 600, same
+password on later runs; `--password=...` to choose, `--no-password` to opt out with a
+warning), prints the tunnel link and password in a box instead of leaving the link buried in
+cloudflared's log, downloads the cloudflared build matching the CPU (many Chromebooks are ARM;
+it used to always fetch amd64), stops an earlier run's tunnel first, and stops tunnel + server
+together on Ctrl+C. Deliberately one shared password rather than user accounts - this is a
+prototype for a handful of testers, and HTTP Basic needs no login page, sessions or user table
 → **`deploy.sh` waits
 until the server actually answers** (up to 3 minutes) instead of a fixed 2-second check - a
 first start after an install/update compiles every heavy dependency and took ~20s, so the
@@ -791,6 +809,20 @@ script said "Running, open localhost" while nothing was listening yet and the br
 - **QnA text isn't in Data Search / Data Generation.** Deliberate for now (unchecked slips
   shouldn't read as finished content), but there's no "publish done pages to the library"
   step yet either - export is the only way out.
+- **QnA's prompt caching hasn't been confirmed against the live API** - the request shape is
+  tested (breakpoint on the instructions only), but the account had no credit left when it
+  was added, so whether the instructions clear Opus 5.5's 512-token cache minimum and actually
+  produce `cache_read_input_tokens` on page 2+ is unverified. Check `_meta` in a few pages'
+  `ai_json` after the next real upload.
+- **Tester access is one shared password, not accounts.** Everyone who has it can do
+  everything, deleting included, and there's no per-tester history of who changed what. The
+  quick tunnel's `*.trycloudflare.com` link also changes on every `deploy.sh` run and exists
+  only while that terminal stays open - a stable link needs a named Cloudflare tunnel (a
+  Cloudflare account and domain) or a hosted deploy.
+- **The tunnel part of `deploy.sh` was tested with a stand-in `cloudflared`** printing the
+  same startup line (the sandbox it was built in can't reach Cloudflare): link extraction,
+  banner, password generation/persistence, `--password`/`--no-password`/`--no-tunnel`, and
+  stop-on-signal all ran for real against the live server; a real quick tunnel didn't.
 - **QnA's per-page confidence is Claude's own high/medium/low estimate**, same "not
   calibrated" caveat as the vision engine's; the `⟦word?⟧` marks are the more useful signal.
 - **Pipeline: the vision-LLM's JSON output is hand-formatted by the model, not

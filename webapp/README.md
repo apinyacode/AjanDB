@@ -109,6 +109,23 @@ to skip that and keep the server local-only (`http://localhost:8000/`), which si
 tunnel connectivity issues entirely for local testing. See the script itself for the
 `vercel` target and its current limitations.
 
+**Sharing with testers** - the tunnel gives a public link, and since the app has no user
+accounts, `deploy.sh` protects it with a tester password whenever it opens one:
+
+```bash
+bash deploy.sh                      # link + an auto-generated password (kept in webapp/.env)
+bash deploy.sh --password=lotus25   # choose the password yourself
+bash deploy.sh --no-password        # no password - anyone with the link can read and delete everything
+```
+
+Once the tunnel is up it prints a box with the **link** and **password** to send to testers;
+their browser asks for the password once (any username). The link changes on every run, the
+password doesn't. Keep the terminal open - Ctrl+C stops sharing and the server. The password
+is just the `AJANDB_PASSWORD` environment variable (`backend/main.py`'s
+`require_tester_password`), so it works the same on any host. If the server has an API key in
+`webapp/.env`, testers' uploads are billed to it - leave it out and let each tester use the
+API Keys panel instead.
+
 **Docker** (deploy artifact for a future hosted target — build from the **repo root**,
 not from `webapp/`, since the image needs `../pdf_to_docx_pipeline` too):
 
