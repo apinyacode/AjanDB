@@ -342,8 +342,16 @@ function wireChunkEditControls(card, chunk) {
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail || "Failed to save");
+      const wasFlagged = Boolean(chunk.needs_review);
       chunk.markdown = data.markdown;
       chunk.needs_review = data.needs_review;
+      if (wasFlagged !== Boolean(chunk.needs_review)) {
+        // Lets the book card this page sits in update its "need review" count
+        // (and its Export .docx button) without waiting for a list refresh.
+        card.dispatchEvent(new CustomEvent("chunk-review-changed", {
+          bubbles: true, detail: { delta: chunk.needs_review ? 1 : -1 },
+        }));
+      }
       viewEl.innerHTML = renderMarkdownWithImages(chunk.markdown, []);
       card.classList.toggle("needs-review", chunk.needs_review);
       needsReviewBadge.classList.toggle("hidden", !chunk.needs_review);
@@ -415,6 +423,7 @@ function applyReviewZoom() {
   reviewImageStage.style.height = percent;
   reviewMarkdownEditor.style.setProperty("--zoom-font-size", `${REVIEW_BASE_FONT_REM * reviewZoom}rem`);
   reviewZoomLevelEl.textContent = percent;
+  updateReviewLineNumbers();  // a new font size re-wraps the lines
 }
 
 function setReviewZoom(nextZoom) {
@@ -462,14 +471,47 @@ function updateReviewHighlight() {
     { snippets: highDivergenceSnippets, className: "ensemble-disagreement-high" },
   ];
   reviewMarkdownHighlight.innerHTML = renderHighlightedMarkdown(text, groups) + "\n";
+  updateReviewLineNumbers();
   hideSpellcheckMenu();  // stale menu could point at a word/position that no longer matches
 }
 reviewMarkdown.addEventListener("input", updateReviewHighlight);
 reviewMarkdown.addEventListener("scroll", () => {
   reviewMarkdownHighlight.scrollTop = reviewMarkdown.scrollTop;
   reviewMarkdownHighlight.scrollLeft = reviewMarkdown.scrollLeft;
+  updateReviewLineNumbers();
   hideSpellcheckMenu();
 });
+
+// --- Line numbers beside the review editor, so a line can be referred to by
+// number. Only lines with text are numbered (the blank lines between
+// paragraphs aren't lines on the page), and a number sits beside where its
+// line *starts*: this editor wraps long lines, so line N isn't simply row N.
+// Where each line starts is measured from a hidden copy of the text laid out
+// exactly like the textarea (same font, padding, width, wrapping). ---
+function updateReviewLineNumbers() {
+  // Looked up here rather than in module-level consts: applyReviewZoom (above)
+  // already calls this while the page is still loading, before code down here
+  // has run.
+  const reviewLineNumbers = document.getElementById("review-line-numbers");
+  const reviewLineMeasure = document.getElementById("review-line-measure");
+  reviewLineMeasure.style.width = `${reviewMarkdown.clientWidth}px`;  // excludes the scrollbar, like the text itself
+  reviewLineMeasure.replaceChildren(...reviewMarkdown.value.split("\n").map((line) => {
+    const row = document.createElement("div");
+    row.textContent = line || "\u200b";  // an empty div would have no height
+    return row;
+  }));
+  const fontSize = getComputedStyle(reviewMarkdown).fontSize;
+  const numbers = [];
+  let lineNumber = 0;
+  for (const row of reviewLineMeasure.children) {
+    if (!row.textContent.trim() || row.textContent === "\u200b") continue;
+    lineNumber += 1;
+    const top = row.offsetTop + reviewMarkdown.clientTop - reviewMarkdown.scrollTop;
+    numbers.push(`<span style="top:${top}px;font-size:${fontSize}">${lineNumber}</span>`);
+  }
+  reviewLineNumbers.innerHTML = numbers.join("");
+}
+window.addEventListener("resize", updateReviewLineNumbers);
 
 // --- Inline spell-check corrections: click a red-underlined word for a
 // dropdown of pythainlp's suggestions (see spellcheck.py), word-processor
@@ -898,6 +940,23 @@ async function loadBooks() {
   }
 }
 
+// Why a book can't be exported to Word yet, or "" if it can - the same three
+// checks main.py's export_book_docx enforces (it re-checks, since these counts
+// are only as fresh as the last book-list refresh).
+function docxExportBlocker(book) {
+  if (book.pages_stored < book.total_pages) return "Some pages haven't been converted yet - resume the review first.";
+  if (book.needs_review_count) return `${book.needs_review_count} page(s) still need review - check and save them first.`;
+  if (!book.ready_for_publish) return "Mark this book ready for publish first.";
+  return "";
+}
+
+function syncDocxExportButton(button, book) {
+  const blocker = docxExportBlocker(book);
+  button.disabled = Boolean(blocker);
+  button.title = blocker || "Download this book as a Word document";
+  button.textContent = blocker ? "🔒 Export .docx" : "Export .docx";
+}
+
 function renderBookCard(book) {
   const card = document.createElement("div");
   card.className = "book-card" + (book.needs_review_count ? " needs-review" : "");
@@ -915,12 +974,13 @@ function renderBookCard(book) {
     `<span>${escapeHtml(book.category)}</span>` +
     `<span>Confidence: ${confidenceText}</span>` +
     (book.needs_review_count
-      ? `<span class="badge">${book.needs_review_count} page(s) need review</span>` : "") +
+      ? `<span class="badge badge-needs-review">${book.needs_review_count} page(s) need review</span>` : "") +
     (book.resumable ? `<span class="badge badge-resumable">Incomplete</span>` : "") +
     `</div>` +
     `<div class="row">` +
     `<button class="ghost view-book-btn" type="button">View pages</button>` +
     `<a class="ghost" href="/api/books/${book.id}/export" download>Export .md</a>` +
+    `<button class="ghost export-docx-btn" type="button">Export .docx</button>` +
     (book.has_original
       ? `<a class="ghost" href="/api/books/${book.id}/original" target="_blank">View original</a>` +
         `<a class="ghost" href="/api/books/${book.id}/original/export" download>Export original</a>`
@@ -976,6 +1036,37 @@ function renderBookCard(book) {
     }
   });
 
+  const docxBtn = card.querySelector(".export-docx-btn");
+  syncDocxExportButton(docxBtn, book);
+  card.addEventListener("chunk-review-changed", (e) => {
+    book.needs_review_count = Math.max(0, (book.needs_review_count || 0) + e.detail.delta);
+    card.classList.toggle("needs-review", Boolean(book.needs_review_count));
+    const metaEl = card.querySelector(".chunk-meta");
+    metaEl.querySelector(".badge-needs-review")?.remove();
+    if (book.needs_review_count) {
+      metaEl.insertAdjacentHTML("beforeend",
+        `<span class="badge badge-needs-review">${book.needs_review_count} page(s) need review</span>`);
+    }
+    syncDocxExportButton(docxBtn, book);
+  });
+  docxBtn.addEventListener("click", async () => {
+    // Fetched first rather than a plain download link, so a refusal (the
+    // book changed since this list was loaded) shows as a message instead of
+    // a downloaded error page.
+    statusEl.textContent = "Preparing Word file...";
+    const res = await fetch(`/api/books/${book.id}/export/docx`);
+    if (!res.ok) {
+      statusEl.textContent = (await res.json()).detail || "Export failed.";
+      return;
+    }
+    const link = document.createElement("a");
+    link.href = URL.createObjectURL(await res.blob());
+    link.download = book.source_filename.replace(/\.[^.]+$/, "") + ".docx";
+    link.click();
+    setTimeout(() => URL.revokeObjectURL(link.href), 10000);  // revoking at once can cancel the download
+    statusEl.textContent = "";
+  });
+
   const publishBtn = card.querySelector(".publish-toggle-btn");
   publishBtn.addEventListener("click", async () => {
     const nextReady = !book.ready_for_publish;
@@ -991,6 +1082,7 @@ function renderBookCard(book) {
       book.ready_for_publish = data.ready_for_publish;
       publishBtn.textContent = book.ready_for_publish ? "✓ Ready for publish" : "☆ Mark ready for publish";
       publishBtn.classList.toggle("ghost", !book.ready_for_publish);
+      syncDocxExportButton(docxBtn, book);
     } catch (err) {
       statusEl.textContent = `Error: ${err.message}`;
     } finally {

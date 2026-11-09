@@ -286,6 +286,14 @@ def set_ready_for_publish(conn: sqlite3.Connection, source_filename: str,
     conn.commit()
 
 
+def get_ready_for_publish(conn: sqlite3.Connection, source_filename: str, total_pages: int) -> bool:
+    row = conn.execute(
+        "SELECT ready_for_publish FROM book_flags WHERE source_filename = ? AND total_pages = ?",
+        (source_filename, total_pages),
+    ).fetchone()
+    return bool(row and row["ready_for_publish"])
+
+
 def set_book_label(conn: sqlite3.Connection, source_filename: str, total_pages: int,
                     key: str, value: str) -> None:
     """Sets (or overwrites) one label on a book. There's no fixed set of

@@ -23,7 +23,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import book_compiler, categorize, content_studio, convert, db, originals, qna, review, sources, spellcheck, tts
+from . import book_compiler, book_docx, categorize, content_studio, convert, db, originals, qna, review, sources, spellcheck, tts
 
 app = FastAPI(title="AjanDB")
 
@@ -708,6 +708,38 @@ def export_book(book_id: int, request: Request):
     filename = _export_filename(chunks[0]["source_filename"])
     return Response(
         content=markdown, media_type="text/markdown",
+        headers={"Content-Disposition": _content_disposition(filename)},
+    )
+
+
+@app.get("/api/books/{book_id}/export/docx")
+def export_book_docx(book_id: int):
+    """Word export of a finished book - unlike Export .md (available any
+    time, for working copies), only once the book is ready to hand on: every
+    page stored (a cancelled review leaves gaps), none still flagged "Needs
+    review", and marked ready for publish. Checked here, not just by the
+    button's state, since the button's counts are only as fresh as the last
+    book-list refresh (see CONTEXT.md's note on live badge updates)."""
+    conn = db.get_connection()
+    try:
+        chunks = db.get_book_chunks(conn, book_id)
+        if not chunks:
+            raise HTTPException(404, "Book not found")
+        ready = db.get_ready_for_publish(conn, chunks[0]["source_filename"], chunks[0]["total_pages"])
+    finally:
+        conn.close()
+    missing = chunks[0]["total_pages"] - len(chunks)
+    flagged = sum(1 for c in chunks if c["needs_review"])
+    if missing:
+        raise HTTPException(409, f"{missing} page(s) haven't been converted yet - resume the review first.")
+    if flagged:
+        raise HTTPException(409, f"{flagged} page(s) still need review - check and save them first.")
+    if not ready:
+        raise HTTPException(409, "Mark this book ready for publish first.")
+    filename = os.path.splitext(chunks[0]["source_filename"])[0] + ".docx"
+    return Response(
+        content=book_docx.book_to_docx(chunks),
+        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
         headers={"Content-Disposition": _content_disposition(filename)},
     )
 

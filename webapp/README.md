@@ -28,7 +28,9 @@ searchable markdown, and compiling a book from whatever matches a topic.
   [`../CONTEXT.md`](../CONTEXT.md)'s "Multi-signal 'likely wrong' flagging", "Ensemble
   verification", and "Thai spell-check".
 - **Data Search** — full-text search (SQLite FTS5) plus a book browser with per-book
-  `.md` export, delete, a manual "ready for publish" flag, free-form **labels** (publish
+  `.md` export, **Export .docx** (a Word file of the finished book - unlocked once every page
+  is converted, none is flagged "Needs review", and the book is marked ready for publish; a
+  locked button's tooltip says which is missing), delete, a manual "ready for publish" flag, free-form **labels** (publish
   date, media type, content, author/publisher, or any custom key you add), **View/Export
   original** to get back the exact file a book was uploaded from, and (for a page-by-page
   review that was cancelled or abandoned partway through) a **Resume conversion** button that

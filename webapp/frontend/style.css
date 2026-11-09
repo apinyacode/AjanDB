@@ -580,7 +580,8 @@ mark {
 }
 
 .markdown-editor .markdown-highlight,
-.markdown-editor textarea {
+.markdown-editor textarea,
+.markdown-editor .markdown-line-measure {
   position: absolute;
   inset: 0;
   width: 100%;
@@ -829,6 +830,53 @@ mark.qna-unsure {
 /* Long option labels ("Page 12 · to review · medium confidence · 3 unsure")
    would otherwise push the select wider than a phone screen. */
 #qna-page-select {
+  max-width: 100%;
+  min-width: 0;
+}
+
+/* --- Review editor line numbers (see updateReviewLineNumbers in app.js) --- */
+.review-text-wrap {
+  display: flex;
+  gap: 0.3rem;
+}
+
+.review-text-wrap .markdown-editor {
+  flex: 1;
+  min-width: 0;
+}
+
+.review-line-numbers {
+  position: relative;
+  height: var(--review-area-height);
+  min-width: 2.2em;
+  overflow: hidden;
+  font-family: ui-monospace, monospace;
+  line-height: 1.5;
+  opacity: 0.5;
+}
+
+.review-line-numbers span {
+  position: absolute;
+  right: 0.2rem;
+}
+
+/* A hidden copy of the editor's text, laid out with the same font, padding
+   and wrapping, used only to find where each line starts. Its width is set
+   from the textarea in JS; no border, so the width is all text area. */
+.markdown-editor .markdown-line-measure {
+  inset: auto;
+  top: 0;
+  left: 0;
+  height: auto;
+  border: 0;
+  overflow: visible;
+  visibility: hidden;
+  pointer-events: none;
+}
+
+/* Long option labels made this wider than a phone screen (the whole page
+   scrolled sideways) - same fix as #qna-page-select. */
+#engine-select {
   max-width: 100%;
   min-width: 0;
 }

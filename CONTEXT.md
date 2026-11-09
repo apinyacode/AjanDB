@@ -408,6 +408,29 @@ two would break the overlay's alignment with the real text.
   into being a hit target, so every pixel that isn't exactly on a flagged word still falls
   through to the textarea for normal editing, and only a click that lands on the red
   underline is intercepted.
+- **Export .docx** (`book_docx.py`, `GET /api/books/{id}/export/docx`) — a Word file of a
+  *finished* book, alongside the always-available working-copy `.md` export. Unlocked only
+  when every page is stored (a cancelled review leaves gaps), no page is flagged "Needs
+  review", and the book is marked ready for publish - enforced by the endpoint (409 with the
+  reason) as well as the button, since the card's counts are only as fresh as the last list
+  load. The card's button shows 🔒 and the missing step as its tooltip until then, and now
+  updates the moment it changes: the ready-for-publish toggle re-syncs it, and saving a page
+  edit that sets or clears "Needs review" fires a bubbling `chunk-review-changed` event the
+  book card listens for, adjusting its count/badge/button without a refresh. Converts each
+  page's stored markdown (what the reviewer approved) rather than re-running the pipeline's
+  `assemble.py`, whose raw `doc_items` aren't kept: headings (shifted one level, under a
+  "Page N" heading per page, page break between pages), paragraphs with their internal line
+  breaks kept, bullet lists, **bold**/*italic*, and `/images/` links embedded from
+  `data/images/` (scaled to ≤15 cm wide; a missing file becomes an italic placeholder).
+- **Review editor line numbers** — a gutter beside Data Store's editable text numbers each
+  line that has text (blank separator lines aren't counted, since they aren't lines on the
+  page), placed beside where the line *starts*: the editor wraps (`pre-wrap`), so line N
+  isn't row N. Positions come from a hidden `.markdown-line-measure` copy of the text inside
+  `.markdown-editor` sharing the textarea's font/padding/wrapping rules, sized to its
+  `clientWidth`; recomputed on input, scroll, zoom and resize. How well "line N" matches the
+  scan's line N depends on the engine: born-digital and classical text keep the source's line
+  breaks, but the vision engine's prompt asks it to merge text into paragraphs, so there one
+  numbered line is usually a whole paragraph.
 - **Book browsing/export** — groups uploaded pages into "books," dedupes re-uploaded pages,
   `.md` export rewrites relative image links to absolute URLs (a downloaded file has no
   "current page" to resolve a relative link against). Each page in a book's expanded "View
@@ -546,7 +569,7 @@ correct from passing tests alone.
 
 ## Current state
 
-**347 tests pass** (48 in `pdf_to_docx_pipeline`, 299 in `webapp`), covering: QnA (cropping
+**350 tests pass** (48 in `pdf_to_docx_pipeline`, 302 in `webapp`), covering: QnA (cropping
 ignores scanner edge lines and keeps a blank page whole, structured answer → review fields,
 upload → background transcription → per-page status with one page failing, retry re-sending
 only failed pages, edit/mark-done/export CSV+Word including `done_only`, delete removing rows
@@ -823,6 +846,10 @@ script said "Running, open localhost" while nothing was listening yet and the br
   same startup line (the sandbox it was built in can't reach Cloudflare): link extraction,
   banner, password generation/persistence, `--password`/`--no-password`/`--no-tunnel`, and
   stop-on-signal all ran for real against the live server; a real quick tunnel didn't.
+- **Line numbers only match the scan's lines where the text kept them.** The vision
+  engine merges text into paragraphs (by its prompt, so paragraphs read naturally in search
+  and export), so in a vision-converted page a numbered line is usually a whole paragraph.
+  Keeping source line breaks there would mean changing that prompt for every vision page.
 - **QnA's per-page confidence is Claude's own high/medium/low estimate**, same "not
   calibrated" caveat as the vision engine's; the `⟦word?⟧` marks are the more useful signal.
 - **Pipeline: the vision-LLM's JSON output is hand-formatted by the model, not
