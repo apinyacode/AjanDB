@@ -10,6 +10,7 @@ them searchable, with a focus on bilingual English/Thai content.
   guessed at.
 - Stores everything as searchable markdown (SQLite + full-text search), one chunk per page,
   with a confidence score and review flag per chunk.
+- Exports a finished book (reviewed, marked ready for publish) as a Word document.
 - Lets you review and correct a page before it's saved — low-confidence text and Thai
   spelling mistakes highlighted inline, with read-aloud and an opt-in second-model check.
 - Synthesises a new book from stored content matching a topic, via Claude or GPT.
