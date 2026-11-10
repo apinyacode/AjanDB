@@ -84,3 +84,36 @@ def test_export_refuses_a_book_with_pages_still_missing(tmp_path, monkeypatch):
     conn.close()
     resp = client.get(f"/api/books/{book_id}/export/docx")
     assert resp.status_code == 409 and "2 page(s) haven't been converted" in resp.json()["detail"]
+
+
+def test_draft_export_works_at_any_stage_and_is_marked_draft(tmp_path, monkeypatch):
+    client, db_path = _client(tmp_path, monkeypatch)
+    conn = db.get_connection()  # patched by _client to the test database
+    db.insert_chunks(conn, "half.pdf", "pdf", "Dhamma", [
+        {"page_number": 1, "markdown": "หน้าหนึ่ง", "confidence": 100, "needs_review": False},
+        {"page_number": 3, "markdown": "หน้าสาม", "confidence": 60, "needs_review": True},
+    ], total_pages=4)
+    book_id = db.list_books(conn)[0]["id"]
+    conn.close()
+
+    # Not ready, a page flagged, pages missing - the finished export refuses...
+    assert client.get(f"/api/books/{book_id}/export/docx").status_code == 409
+    # ...the draft doesn't.
+    draft = client.get(f"/api/books/{book_id}/export/docx-draft")
+    assert draft.status_code == 200
+    assert 'filename="half_draft.docx"' in draft.headers["content-disposition"]
+    texts = [p.text for p in Document(io.BytesIO(draft.content)).paragraphs]
+    assert any(t.startswith("DRAFT - not yet approved") for t in texts)
+    assert 'Pages still flagged "Needs review": 3' in texts
+    assert "Pages not converted yet (not in this file): 2, 4" in texts
+    assert "Page 3 (needs review)" in texts and "Page 1" in texts
+    assert "หน้าสาม" in texts
+
+    assert client.get("/api/books/9999/export/docx-draft").status_code == 404
+
+
+def test_finished_export_has_no_draft_marking():
+    chunks = [_chunk(1, "หน้าแรก", total=1)]
+    texts = [p.text for p in Document(io.BytesIO(book_docx.book_to_docx(chunks))).paragraphs]
+    assert not any("DRAFT" in t for t in texts)
+    assert "Page 1" in texts

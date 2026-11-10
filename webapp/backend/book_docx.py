@@ -1,8 +1,12 @@
 """
-Word (.docx) export of a stored book - the "finished" counterpart to Data
-Search's Export .md, only offered once a book is complete, has no page left
-flagged "Needs review", and has been marked ready for publish (see main.py's
-export_book_docx).
+Word (.docx) export of a stored book, in two forms (see main.py):
+- the finished export, only offered once a book is complete, has no page left
+  flagged "Needs review", and has been marked ready for publish
+  (export_book_docx);
+- a draft, available any time - the same .md -> .docx conversion, but marked
+  DRAFT on its first page, with flagged pages labelled and missing pages
+  listed, so a working copy can't be mistaken for the approved one
+  (export_book_docx_draft).
 
 Converts each page's stored markdown (see convert.py) rather than re-running
 the pipeline's own .docx assembler (pdf_to_docx_pipeline/pipeline/assemble.py):
@@ -73,17 +77,29 @@ def _add_markdown(document, markdown: str):
                 _add_inline(paragraph, line)
 
 
-def book_to_docx(chunks: list[dict]) -> bytes:
+def book_to_docx(chunks: list[dict], draft: bool = False) -> bytes:
     """`chunks`: one book's pages in order, as db.get_book_chunks returns them."""
     first = chunks[0]
     document = Document()
     document.styles["Normal"].font.size = Pt(12)
     document.add_heading(os.path.splitext(first["source_filename"])[0], level=0)
     document.add_paragraph().add_run(f"Category: {first['category']} · {first['total_pages']} page(s)").italic = True
+    if draft:
+        banner = document.add_paragraph().add_run(
+            "DRAFT - not yet approved for publishing. Text may still contain errors.")
+        banner.bold = True
+        flagged = [str(c["page_number"]) for c in chunks if c.get("needs_review")]
+        stored = {c["page_number"] for c in chunks}
+        missing = [str(n) for n in range(1, first["total_pages"] + 1) if n not in stored]
+        if flagged:
+            document.add_paragraph(f"Pages still flagged \"Needs review\": {', '.join(flagged)}")
+        if missing:
+            document.add_paragraph(f"Pages not converted yet (not in this file): {', '.join(missing)}")
     for index, chunk in enumerate(chunks):
         if index:
             document.add_page_break()
-        document.add_heading(f"Page {chunk['page_number']}", level=1)
+        flag = " (needs review)" if draft and chunk.get("needs_review") else ""
+        document.add_heading(f"Page {chunk['page_number']}{flag}", level=1)
         _add_markdown(document, chunk["markdown"])
     buffer = io.BytesIO()
     document.save(buffer)

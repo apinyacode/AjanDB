@@ -422,6 +422,11 @@ two would break the overlay's alignment with the real text.
   "Page N" heading per page, page break between pages), paragraphs with their internal line
   breaks kept, bullet lists, **bold**/*italic*, and `/images/` links embedded from
   `data/images/` (scaled to ≤15 cm wide; a missing file becomes an italic placeholder).
+- **Export draft .docx** (`GET /api/books/{id}/export/docx-draft`) — the same .md → .docx
+  conversion (`book_docx.book_to_docx(chunks, draft=True)`) with none of the finished export's
+  checks, for a Word working copy at any stage. Marked so it can't pass for the approved file: a
+  bold DRAFT line under the title, "(needs review)" on flagged pages' headings, a list of pages
+  not converted yet, and a `_draft.docx` filename.
 - **Review editor line numbers** — a gutter beside Data Store's editable text numbers each
   line that has text (blank separator lines aren't counted, since they aren't lines on the
   page), placed beside where the line *starts*: the editor wraps (`pre-wrap`), so line N
@@ -569,7 +574,7 @@ correct from passing tests alone.
 
 ## Current state
 
-**350 tests pass** (48 in `pdf_to_docx_pipeline`, 302 in `webapp`), covering: QnA (cropping
+**352 tests pass** (48 in `pdf_to_docx_pipeline`, 304 in `webapp`), covering: QnA (cropping
 ignores scanner edge lines and keeps a blank page whole, structured answer → review fields,
 upload → background transcription → per-page status with one page failing, retry re-sending
 only failed pages, edit/mark-done/export CSV+Word including `done_only`, delete removing rows
