@@ -988,6 +988,8 @@ function renderBookCard(book) {
     `<div class="row">` +
     `<button class="ghost view-book-btn" type="button">View pages</button>` +
     `<a class="ghost" href="/api/books/${book.id}/export" download>Export .md</a>` +
+    `<a class="ghost" href="/api/books/${book.id}/export/docx-draft" download ` +
+    `title="Word copy of the book as it is now, marked DRAFT - available any time">Export draft .docx</a>` +
     `<button class="ghost export-docx-btn" type="button">Export .docx</button>` +
     (book.has_original
       ? `<a class="ghost" href="/api/books/${book.id}/original" target="_blank">View original</a>` +

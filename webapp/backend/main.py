@@ -744,6 +744,27 @@ def export_book_docx(book_id: int):
     )
 
 
+@app.get("/api/books/{book_id}/export/docx-draft")
+def export_book_docx_draft(book_id: int):
+    """A Word working copy of a book at any stage - the same .md -> .docx
+    conversion as export_book_docx above, with none of its checks, but marked
+    DRAFT (see book_docx.book_to_docx) so it can't be mistaken for the
+    finished export."""
+    conn = db.get_connection()
+    try:
+        chunks = db.get_book_chunks(conn, book_id)
+    finally:
+        conn.close()
+    if not chunks:
+        raise HTTPException(404, "Book not found")
+    filename = os.path.splitext(chunks[0]["source_filename"])[0] + "_draft.docx"
+    return Response(
+        content=book_docx.book_to_docx(chunks, draft=True),
+        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        headers={"Content-Disposition": _content_disposition(filename)},
+    )
+
+
 def _serve_original(book_id: int, disposition: str) -> FileResponse:
     conn = db.get_connection()
     try:
