@@ -1,0 +1,36 @@
+# Render Blueprint for AjanDB.
+#
+# In the Render dashboard: New + > Blueprint > pick the AjanDB repository.
+# Render reads this file and creates everything below. After that, every merge
+# into the `main` branch on GitHub rebuilds and publishes the app automatically.
+# The Docker build runs the test suite, so a change that breaks the tests never
+# goes live (the previous version keeps running).
+services:
+  - type: web
+    name: ajandb
+    runtime: docker
+    dockerfilePath: ./webapp/Dockerfile
+    dockerContext: .           # the image needs both webapp/ and pdf_to_docx_pipeline/
+    region: singapore          # closest Render region to Thailand
+    # Standard = 2 GB RAM. Not Starter (512 MB): converting one large PDF alone
+    # peaks around 625 MB, so Starter would run out of memory on real uploads.
+    plan: standard
+    branch: main
+    autoDeploy: true
+    healthCheckPath: /healthz
+    numInstances: 1            # SQLite + in-memory upload/review jobs: keep this at 1
+    disk:
+      name: ajandb-data        # database, page images, originals, QnA scans
+      mountPath: /app/webapp/data
+      sizeGB: 10               # ~100 books of ~60 pages need 3-5 GB; grow it later if needed
+    envVars:
+      - key: AJANDB_PASSWORD   # the shared tester password (any username) - Render
+        generateValue: true    #   makes one; see or change it under Environment
+      - key: ANTHROPIC_API_KEY # optional. If set, everyone with the password can
+        sync: false            #   upload on your bill; leave empty and each person
+      - key: OPENAI_API_KEY    #   uses the API Keys panel in the app instead
+        sync: false
+      - key: AZURE_SPEECH_KEY  # optional, for Read aloud / video narration
+        sync: false
+      - key: AZURE_SPEECH_REGION
+        sync: false
