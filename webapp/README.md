@@ -132,19 +132,45 @@ is just the `AJANDB_PASSWORD` environment variable (`backend/main.py`'s
 `webapp/.env`, testers' uploads are billed to it - leave it out and let each tester use the
 API Keys panel instead.
 
-**Docker** (deploy artifact for a future hosted target — build from the **repo root**,
-not from `webapp/`, since the image needs `../pdf_to_docx_pipeline` too):
+**Docker** — build from the **repo root**, not from `webapp/`, since the image needs
+`../pdf_to_docx_pipeline` too. The build runs the whole test suite, so a broken change fails
+the build instead of producing an image:
 
 ```bash
 docker build -f webapp/Dockerfile -t ajandb .
-docker run -p 8000:8000 -v ajandb-data:/app/webapp/data ajandb
+docker run -p 8000:8000 -v ajandb-data:/app/webapp/data -e AJANDB_PASSWORD=choose-one ajandb
 ```
 
-The volume mount keeps `data/ajandb.sqlite3`, `data/images/`, `data/originals/`, and Data
-Generation's `data/generated_images/`/`data/generated_videos/` across container restarts —
-without it, the library (and anything generated) is wiped on every redeploy. There's no
-persistent-volume or stable-URL config beyond this yet (that depends on which host is chosen
-— see [`../CONTEXT.md`](../CONTEXT.md)'s "Not yet done").
+The volume keeps everything under `data/` (the database, page images, originals, QnA scans,
+generated media) across restarts — without it the library is wiped on every redeploy.
+
+### Deploy online with Render
+
+`render.yaml` (repo root) describes the whole service: Docker, Singapore region, the
+**Standard** plan (2 GB RAM — the 512 MB Starter plan runs out of memory converting a large
+PDF), a 10 GB disk for `data/`, a health check, and automatic redeploys from `main`.
+
+1. In the [Render dashboard](https://dashboard.render.com): **New + → Blueprint**, pick the
+   **AjanDB** repository, and confirm. Render shows the service, the disk and their price.
+2. It asks for the optional keys: leave **ANTHROPIC_API_KEY** / **OPENAI_API_KEY** empty unless
+   you want every tester's uploads billed to you — otherwise each person enters their own key
+   in the app's **API Keys** panel. Azure Speech keys are only for Read aloud / video.
+3. Wait for the first build (several minutes: it installs Tesseract and runs the tests).
+4. Your address is shown at the top of the service page (`https://ajandb-….onrender.com`).
+   The **tester password** was generated for you: service page → **Environment** →
+   `AJANDB_PASSWORD` (reveal it, or change it to something easier to share). Testers type it
+   in the browser's sign-in box, with any username.
+5. Optional: **Settings → Custom Domains** for an address like `ajandb.example.org`.
+
+After that, every merge into `main` rebuilds and redeploys automatically (about a minute of
+downtime per deploy, since the disk is attached to one instance). If the tests fail during a
+build, the previous version keeps running.
+
+Data already on another machine (books uploaded locally, or pages transcribed by the old
+`thai_ocr` scripts) doesn't move to Render by itself - Render's disk only starts with what's
+uploaded through the deployed app. `scripts/import_thai_ocr.py` is in the image, but Render
+has no simple way to copy a folder onto its disk, so re-upload through the app, or plan a
+one-off transfer.
 
 ## Run locally
 

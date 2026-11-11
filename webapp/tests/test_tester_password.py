@@ -36,3 +36,11 @@ def test_thai_password_works(monkeypatch):
     monkeypatch.setenv("AJANDB_PASSWORD", "ธรรมะ")
     client = TestClient(main_module.app)
     assert client.get("/", headers=_auth("ธรรมะ")).status_code == 200
+
+
+def test_health_check_answers_without_the_password(monkeypatch):
+    monkeypatch.setenv("AJANDB_PASSWORD", "lotus-2568")
+    client = TestClient(main_module.app)
+    resp = client.get("/healthz")
+    assert resp.status_code == 200 and resp.json() == {"ok": True}
+    assert client.get("/healthz/../api/books").status_code == 401  # no way around the password through it
