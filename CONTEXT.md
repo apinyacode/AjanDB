@@ -950,6 +950,9 @@ the original acceptance criteria.
   `pdf_to_docx_pipeline/`).
 - Setup, run, and test commands: see each subproject's own `README.md` — this doc is
   architecture/decisions, not a setup guide.
+- Handover: `README.md` is written for a developer taking the project over (setup, tests,
+  deployment options, how the work is organised, and how to connect the repo to their own
+  Claude); `CLAUDE.md` is loaded automatically by Claude Code and points it here.
 - This doc is the standing reference to hand a fresh Claude Code session so it doesn't have
   to re-derive the design decisions above from scratch. Update it in the same session a
   change happens, not later — if "Not yet done" isn't genuinely current, it's actively
