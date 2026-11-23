@@ -3,11 +3,10 @@
 **/*.pyc
 **/.pytest_cache/
 **/.git/
+# tests/ and scripts/ are kept: the build runs the test suite, and
+# scripts/import_thai_ocr.py is handy from Render's shell.
 webapp/data/
 webapp/cloudflared
-webapp/tests/
-webapp/scripts/
 webapp/.env
-pdf_to_docx_pipeline/tests/
 pdf_to_docx_pipeline/sample_input.pdf
 *.md

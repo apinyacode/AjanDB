@@ -37,7 +37,7 @@ async def require_tester_password(request: Request, call_next):
     deleting included, plus whatever API key the server holds. Read per
     request, not at import, so tests can set it with monkeypatch."""
     password = os.environ.get("AJANDB_PASSWORD")
-    if password:
+    if password and request.url.path != "/healthz":
         supplied = ""
         header = request.headers.get("authorization", "")
         if header.lower().startswith("basic "):
@@ -53,6 +53,14 @@ async def require_tester_password(request: Request, call_next):
 _FRONTEND_DIR = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "frontend"
 )
+
+
+@app.get("/healthz")
+def healthz():
+    """For the host's health check (Render's healthCheckPath, the Docker
+    HEALTHCHECK): answers without the tester password, says nothing about the
+    library, and only means "the app is up and serving"."""
+    return {"ok": True}
 
 
 @app.get("/images/{filename}")
